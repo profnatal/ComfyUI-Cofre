@@ -15,7 +15,7 @@ from . import core
 WEB_DIRECTORY = "./web"
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 rotas = PromptServer.instance.routes
 
@@ -39,7 +39,7 @@ async def r_resumo(req):
 
 @rotas.get("/cofre/estado")
 async def r_estado(req):
-    return _j({"indexacao": core.ESTADO, "movendo": core.MOVENDO})
+    return _j({"indexacao": core.ESTADO, "movendo": core.MOVENDO, "civitai": core.ENRIQ, "atualizacoes": core.ATUALIZ})
 
 
 @rotas.post("/cofre/indexar")
@@ -57,7 +57,33 @@ async def r_indexar(req):
 async def r_modelos(req):
     q = req.query
     return _j(await _thread(core.listar_modelos, q.get("q", ""), q.get("cat", ""), q.get("disco", ""),
-                            q.get("filtro", ""), q.get("ordem", "tamanho"), int(q.get("limite", 500))))
+                            q.get("filtro", ""), q.get("ordem", "tamanho"), int(q.get("limite", 1000)), q.get("familia", "")))
+
+
+@rotas.get("/cofre/facetas")
+async def r_facetas(req):
+    return _j(await _thread(core.facetas, req.query.get("cat", ""), req.query.get("disco", "")))
+
+
+@rotas.get("/cofre/previa")
+async def r_previa(req):
+    """Miniatura da prévia de um modelo (escolhida, arquivo ao lado, Civitai ou última imagem gerada)."""
+    p = req.query.get("path", "")
+    if not core._permitido(p):
+        return web.Response(status=404)
+    try:
+        arq = await _thread(core.arquivo_previa, p)
+        alvo = await _thread(core.miniatura, arq, int(req.query.get("lado", 384))) if arq else None
+    except Exception:
+        alvo = None
+    if not alvo:
+        return web.Response(status=404)
+    return web.FileResponse(alvo, headers={"Cache-Control": "no-cache"})
+
+
+@rotas.get("/cofre/saidas_do_modelo")
+async def r_saidas_modelo(req):
+    return _j(await _thread(core.saidas_do_modelo, req.query.get("nome", "")))
 
 
 @rotas.get("/cofre/workflows")
@@ -75,7 +101,65 @@ async def r_nodes(req):
 async def r_saidas(req):
     q = req.query
     return _j(await _thread(core.listar_saidas, q.get("q", ""), q.get("tipo", ""), int(q.get("pagina", 0)),
-                            int(q.get("por_pag", 60))))
+                            int(q.get("por_pag", 60)), q.get("sens", ""), q.get("ordem", "data")))
+
+
+@rotas.get("/cofre/texto")
+async def r_texto(req):
+    p = req.query.get("path", "")
+    if not core._permitido(p) or not os.path.isfile(p):
+        return _erro("arquivo não permitido")
+    return _j(await _thread(core.ler_texto, p))
+
+
+@rotas.post("/cofre/marcar")
+async def r_marcar(req):
+    """Marca/desmarca algo como sensível e/ou define a prévia de um modelo (imagem de saída)."""
+    d = await req.json()
+    p = d.get("path", "")
+    if not core._permitido(p):
+        return _erro("arquivo não permitido")
+    pv = d.get("previa", "manter")
+    if pv not in ("manter", None) and (not core._permitido(pv) or not os.path.isfile(pv)):
+        return _erro("imagem de prévia não permitida")
+    return _j({"ok": await _thread(core.marcar, p, d.get("nsfw", "manter"), pv)})
+
+
+@rotas.get("/cofre/config")
+async def r_config(req):
+    return _j(dict(core.config_ler(), __padrao=core.NSFW_PADRAO))
+
+
+@rotas.post("/cofre/config")
+async def r_config_post(req):
+    return _j(await _thread(core.config_gravar, await req.json()))
+
+
+@rotas.post("/cofre/civitai_lote")
+async def r_civitai_lote(req):
+    d = await req.json()
+    if d.get("parar"):
+        core.ENRIQ["parar"] = True
+        return _j({"ok": True})
+    if not d.get("confirmar"):
+        return _erro("confirmação obrigatória")
+    try:
+        return _j({"iniciado": core.enriquecer_lote(d.get("paths") or [])})
+    except Exception as e:
+        return _erro(e)
+
+
+@rotas.post("/cofre/atualizacoes")
+async def r_atualiz(req):
+    try:
+        return _j({"iniciado": core.verificar_atualizacoes()})
+    except Exception as e:
+        return _erro(e)
+
+
+@rotas.get("/cofre/atividade")
+async def r_atividade(req):
+    return _j(await _thread(core.atividade))
 
 
 @rotas.get("/cofre/limpeza")

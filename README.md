@@ -57,12 +57,40 @@ Ele lê o que o próprio ComfyUI já sabe — inclusive as pastas extras do `ext
 | Aba | O que faz |
 |---|---|
 | 📊 **Painel** | Totais da biblioteca, uso de cada disco (com o rótulo do disco), modelos por categoria, por disco e por família, e um resumo dos problemas encontrados. |
-| 🧠 **Modelos** | Lê o **cabeçalho** de `.safetensors` e `.gguf` sem carregar os pesos: família (Flux 1/2, SDXL, SD 1.5, SD3, Z-Image/Lumina2, Qwen-Image, WAN, HunyuanVideo, VAE, T5, CLIP, LLMs…), papel, precisão/quantização, nº de parâmetros, **integridade**, palavras-gatilho de LoRAs e em quais workflows cada modelo é usado. |
+| 🧠 **Modelos** | **Grade de miniaturas** (tamanho P/M/G) ou **lista**, com barra lateral de **pastas, famílias e discos**. Lê o **cabeçalho** de `.safetensors` e `.gguf` sem carregar os pesos: família (Flux 1/2, SDXL, SD 1.5, SD3, Z-Image/Lumina2, Qwen-Image, WAN, HunyuanVideo, VAE, T5, CLIP, LLMs…), papel, precisão/quantização, nº de parâmetros, **integridade**, palavras-gatilho de LoRAs e em quais workflows cada modelo é usado. |
 | 🧩 **Workflows** | Verifica cada workflow salvo (inclusive subgrafos e *group nodes*): **nodes que faltam**, com o pacote provável, e **modelos que faltam**, com sugestões parecidas que você já tem. Botão **Abrir no ComfyUI**. |
 | 🔌 **Custom nodes** | Origem git (URL, branch e commit, lidos direto da pasta `.git`), requisitos, nodes registrados, tamanho, em quantos workflows cada pacote é usado e quais **não carregaram**. |
-| 🖼️ **Saídas** | Galeria de imagens, vídeos e áudios com miniaturas em cache. Extrai **prompt, seed, passos, CFG, sampler e modelo** dos metadados, com busca e botão **Carregar workflow desta imagem**. |
+| 🖼️ **Saídas** | Imagens, vídeos, áudios e **textos/JSON** em **grade** ou **lista** detalhada. Extrai **prompt positivo e negativo, seed, passos, CFG, sampler, modelo e LoRAs usados**. Visualizador com navegação ← →, busca e **Carregar workflow desta imagem**. |
 | 🧹 **Limpeza** | Duplicados, downloads incompletos (`.incomplete`, `.part`), arquivos corrompidos, modelos que nenhum workflow usa, maiores arquivos e pastas de saída que mais ocupam. **Nada é apagado de vez** — tudo vai para a **Lixeira do sistema**. |
 | 🔎 **Busca** | Uma busca única em modelos, workflows, nodes e saídas. |
+| 📜 **Atividade** | Registro de tudo o que o Cofre alterou ou consultou (lixeira, mover, Civitai, marcações). |
+| ⚙️ **Configurações** | Desfoque de conteúdo sensível, lista de palavras, consultas ao Civitai. |
+
+### 🖼️ Prévias dos modelos
+
+Cada modelo ganha uma capa, escolhida nesta ordem:
+
+1. **Imagem escolhida por você** — no detalhe do modelo aparecem as imagens que você gerou com ele; um clique define a capa.
+2. **Arquivo ao lado do modelo** com o mesmo nome (`modelo.preview.png`, `modelo.png`, `.jpg`, `.webp`…), padrão usado por outros gerenciadores.
+3. **Prévia do Civitai**, baixada quando você consulta o modelo (fica em `user/cofre/previas`).
+4. **A imagem mais recente que você gerou** usando aquele modelo ou LoRA.
+
+Sem nenhuma delas, o cartão mostra um ícone da categoria sobre a cor da família.
+
+### 🔞 Conteúdo sensível
+
+Imagens sensíveis ficam **desfocadas** nas miniaturas, nas capas dos modelos e no visualizador. Um clique revela só aquele item; o botão **👁️ Mostrar sensíveis** revela tudo apenas nesta sessão. O Cofre decide nesta ordem:
+
+1. Sua **marcação manual** (🔞 / ✅), que sempre vale.
+2. **Civitai:** modelo marcado como adulto pelo autor.
+3. **Palavras** no prompt **positivo** (o negativo é ignorado — “nsfw” no negativo não marca nada) e no nome ou nas tags de treino do modelo. A lista é editável.
+4. **Modelos usados:** uma imagem gerada com um LoRA sensível também é marcada.
+
+Na aba Saídas dá para **desfocar**, **ocultar** ou **mostrar só** os sensíveis.
+
+### 🌐 Civitai (opcional)
+
+Por modelo ou em lote (“Buscar prévias no Civitai” na lista atual): o Cofre calcula o SHA256 no seu disco e envia **só o hash**. Traz prévia, gatilhos (clique para copiar), descrição, autor, tags, classificação adulta e o aviso **⬆️ versão nova disponível**. Pode ser desligado nas Configurações.
 
 **Ações disponíveis em cada modelo:** abrir a pasta no gerenciador de arquivos, **consultar o Civitai pelo hash** (opcional), **mover para outro disco** mantendo a subpasta (o modelo continua visível para o ComfyUI) e enviar para a Lixeira.
 
@@ -75,6 +103,9 @@ Ele lê o que o próprio ComfyUI já sabe — inclusive as pastas extras do `ext
 | ⛔ **Arquivo truncado** | O tamanho declarado no cabeçalho do `.safetensors` não bate com o tamanho real — típico de download interrompido. Baixe de novo. |
 | 👯 **Duplicado** | Mesmo conteúdo em dois caminhos. Cópias **no mesmo disco** vêm pré-marcadas para limpeza; cópias **em discos diferentes** ficam desmarcadas, pois podem ser backup intencional. Links simbólicos e *hard links* não contam como duplicado. |
 | ⚠️ **Modelo completo na pasta de LoRAs?** | O arquivo é grande demais e tem a estrutura de um modelo base. Provavelmente foi salvo na pasta errada. |
+| ⬆️ **Atualização disponível** | O commit instalado do custom node é diferente do remoto (`git ls-remote`, só leitura). |
+| ⏏️ **Disco desconectado** | O HD externo não está montado. Os modelos dele continuam no índice, marcados como offline. |
+| 🧱 **Componentes** | Checkpoints completos mostram quanto de cada parte trazem (difusão, VAE, codificadores de texto). |
 | 🔁 **Pacote instalado duas vezes** | Duas pastas em `custom_nodes` apontam para o mesmo repositório ou registram os mesmos nodes (ex.: `ComfyUI-KJNodes` e `comfyui-kjnodes`). Causa conflito de versão. |
 | ⚠️ **Re-registra nodes de outros pacotes** | O pacote sobrescreve nodes que pertencem a outros pacotes. Pode mudar o comportamento de workflows sem aviso. |
 | ❌ **Falhou ao importar** | O pacote está na pasta, mas o ComfyUI não conseguiu carregá-lo (lido do log de inicialização). |
@@ -142,7 +173,7 @@ cd ~/ComfyUI/custom_nodes/ComfyUI-Cofre && git pull
 - Lê apenas **cabeçalhos** de `.safetensors` e `.gguf`. Arquivos `.pt`, `.pth`, `.ckpt` e `.bin` (formato *pickle*) **não são abertos**, pois podem executar código.
 - O código dos custom nodes **não é executado** pelo Cofre — ele só lê metadados, a pasta `.git` e o que o ComfyUI já carregou.
 - Exclusões e movimentações **exigem confirmação** e só acontecem **dentro das pastas de modelos e de saída** do ComfyUI. Cada ação fica registrada (`user/cofre/cofre.db`, tabela `log`).
-- A **única chamada externa** é a consulta opcional ao Civitai, feita só quando você clica, e envia apenas o SHA256 do arquivo.
+- Chamadas externas só acontecem quando você clica: a consulta ao Civitai (envia apenas o SHA256) e a verificação de atualizações dos custom nodes (`git ls-remote`, que não baixa nem altera nada).
 - O banco (SQLite) e as miniaturas ficam em `ComfyUI/user/cofre/`. Para zerar o Cofre, apague essa pasta.
 
 ---
@@ -156,10 +187,11 @@ ComfyUI-Cofre/
 └── web/cofre.js     # interface (aba lateral + painel em tela cheia)
 ```
 
-- **Índice:** SQLite em `ComfyUI/user/cofre/cofre.db` (tabelas `modelos`, `workflows`, `nodes`, `saidas`, `log`, `config`). A indexação roda em segundo plano e não trava o ComfyUI.
+- **Índice:** SQLite em `ComfyUI/user/cofre/cofre.db` (tabelas `modelos`, `workflows`, `nodes`, `saidas`, `marcas`, `atualizacoes`, `log`, `config`).
+- **Medido × inferido:** como no Asset Vault, cada informação do modelo indica a origem — **medido** (lido do arquivo, em âmbar) ou **~ inferido** (pelo nome ou pela pasta, em violeta). A indexação roda em segundo plano e não trava o ComfyUI.
 - **Impressão digital rápida:** SHA-1 de tamanho + 1 MB do início, do meio e do fim de cada arquivo. Detecta duplicados em segundos, mesmo com centenas de GB. O SHA256 completo só é calculado sob demanda (consulta ao Civitai).
 - **Links e atalhos:** arquivos alcançados por mais de um caminho (symlinks, bind mounts) são reconhecidos pelo par `(st_dev, st_ino)` e contados uma vez só.
-- **Rotas da API:** `/cofre/resumo`, `/cofre/estado`, `/cofre/indexar`, `/cofre/modelos`, `/cofre/workflows`, `/cofre/nodes`, `/cofre/saidas`, `/cofre/limpeza`, `/cofre/busca`, `/cofre/miniatura`, `/cofre/arquivo`, `/cofre/lixeira`, `/cofre/destinos`, `/cofre/mover`, `/cofre/abrir_pasta`, `/cofre/civitai`.
+- **Rotas da API:** `/cofre/resumo`, `/cofre/estado`, `/cofre/indexar`, `/cofre/modelos`, `/cofre/workflows`, `/cofre/nodes`, `/cofre/saidas`, `/cofre/limpeza`, `/cofre/busca`, `/cofre/miniatura`, `/cofre/lixeira`, `/cofre/destinos`, `/cofre/mover`, `/cofre/abrir_pasta`, `/cofre/civitai`, `/cofre/civitai_lote`, `/cofre/facetas`, `/cofre/previa`, `/cofre/saidas_do_modelo`, `/cofre/texto`, `/cofre/marcar`, `/cofre/config`, `/cofre/atualizacoes`, `/cofre/atividade`.
 
 O Cofre **não adiciona nodes** ao grafo — ele é só uma ferramenta de gestão.
 
@@ -210,6 +242,7 @@ Não. A consulta ao Civitai é opcional, acontece só com o seu clique e envia a
 - [ ] Instalar o pacote que falta direto da aba Workflows (via ComfyUI-Manager).
 - [ ] Exportar o inventário em CSV.
 - [ ] Busca semântica opcional por prompt.
+- [ ] Prévia de modelos 3D (`.glb`).
 - [ ] Tradução da interface para inglês.
 
 Sugestões são bem-vindas nas [Issues](https://github.com/profnatal/ComfyUI-Cofre/issues).
@@ -235,6 +268,8 @@ Relatos de bugs são muito úteis: informe a distro, a versão do ComfyUI e, se 
 - **Workflows:** finds **missing nodes** (with the likely pack) and **missing models** (with similar files you already have). One-click open.
 - **Custom nodes:** git origin and commit, registered nodes, **load failures**, **packs installed twice**, packs that **override other packs' nodes** — without executing their code.
 - **Outputs:** gallery with cached thumbnails, prompt/seed/model metadata, search and **load workflow from image**.
+- **Thumbnails & privacy:** model grid with previews (your pick, sidecar image, Civitai, or your latest render with that model), list/grid for outputs, and **automatic blur for NSFW content** (manual mark, Civitai flag, positive-prompt keywords, or NSFW models used).
+- **Civitai (opt-in):** previews, trigger words, description, adult flag and **newer version available** — only the hash is sent.
 - **Cleanup:** duplicates (same-disk copies pre-selected; cross-disk copies left alone as likely backups), incomplete downloads, unused models — all moved to the **freedesktop Trash**, so everything is restorable.
 
 No extra Python dependencies, no extra server or port, nothing uploaded.

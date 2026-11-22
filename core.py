@@ -19,6 +19,9 @@ EXT_MODELO = (".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin", ".onnx", 
 EXT_IMG = (".png", ".jpg", ".jpeg", ".webp")
 EXT_VID = (".mp4", ".webm", ".mov", ".gif", ".mkv")
 EXT_AUD = (".wav", ".mp3", ".flac", ".ogg", ".m4a")
+EXT_TXT = (".txt", ".json", ".md")
+PREVIAS = os.path.join(BASE, "previas")
+os.makedirs(PREVIAS, exist_ok=True)
 RE_EXT = re.compile(r"\.(safetensors|gguf|ckpt|pt|pth|bin|onnx|sft)$", re.I)
 IGNORAR_CATS = {"custom_nodes", "configs", "classifiers"}
 
@@ -53,9 +56,78 @@ def criar_tabelas():
             sampler TEXT, modelo TEXT, tem_workflow INTEGER);
         CREATE TABLE IF NOT EXISTS log(quando REAL, acao TEXT, detalhe TEXT);
         CREATE TABLE IF NOT EXISTS config(k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS marcas(path TEXT PRIMARY KEY, nsfw INTEGER, previa TEXT);
+        CREATE TABLE IF NOT EXISTS atualizacoes(pasta TEXT PRIMARY KEY, remoto TEXT, situacao TEXT, quando REAL);
         """)
+        novas = {"modelos": [("offline", "INTEGER DEFAULT 0")],
+                 "saidas": [("negativo", "TEXT"), ("modelos_usados", "TEXT")]}
+        for t, cols in novas.items():
+            tem = {r[1] for r in c.execute(f"PRAGMA table_info({t})")}
+            for nome, tipo in cols:
+                if nome not in tem:
+                    c.execute(f"ALTER TABLE {t} ADD COLUMN {nome} {tipo}")
 
 criar_tabelas()
+
+
+# ============================================================================ configurações
+NSFW_PADRAO = ("nsfw, nude, nudity, naked, topless, nipple, nipples, areola, breasts, explicit, porn, porno, pornographic, "
+               "hentai, sex, sexual, erotic, erotica, uncensored, xxx, genitals, pussy, vagina, penis, cum, bdsm, fetish, "
+               "lingerie, nua, nuas, nu frontal, pelada, peladas, seios, mamilos, erótico, erótica")
+CONFIG_PADRAO = {"nsfw_desfocar": "1", "nsfw_palavras": NSFW_PADRAO, "nsfw_nomes_modelos": "1", "civitai": "1"}
+
+_CFG = None
+def config_ler():
+    global _CFG
+    if _CFG is None:
+        with db() as c:
+            d = {r["k"]: r["v"] for r in c.execute("SELECT k,v FROM config")}
+        _CFG = {k: d.get(k, v) for k, v in CONFIG_PADRAO.items()}
+    return dict(_CFG)
+
+def config_gravar(novos):
+    with db() as c:
+        for k, v in (novos or {}).items():
+            if k in CONFIG_PADRAO:
+                c.execute("INSERT OR REPLACE INTO config VALUES(?,?)", (k, str(v)))
+    registrar("configuração", {k: v for k, v in (novos or {}).items() if k in CONFIG_PADRAO and k != "nsfw_palavras"})
+    global _RX_CACHE, _CFG
+    _RX_CACHE = None; _CFG = None
+    return config_ler()
+
+_RX_CACHE = None
+def _rx_nsfw():
+    """Regex das palavras sensíveis (configurável). Palavras curtas exigem palavra inteira."""
+    global _RX_CACHE
+    if _RX_CACHE is None:
+        ps = [p.strip().lower() for p in config_ler()["nsfw_palavras"].split(",") if p.strip()]
+        partes = [(r"(?<![a-z0-9])" + re.escape(p) + (r"[a-zà-ú]*" if len(p) >= 5 else r"(?![a-z0-9])")) for p in ps]
+        _RX_CACHE = re.compile("|".join(partes), re.I) if partes else None
+    return _RX_CACHE
+
+def termo_sensivel(texto):
+    rx = _rx_nsfw()
+    if not rx or not texto:
+        return None
+    m = rx.search(str(texto).replace("_", " ").replace("-", " "))
+    return m.group(0) if m else None
+
+def _marcas():
+    with db() as c:
+        return {r["path"]: dict(r) for r in c.execute("SELECT * FROM marcas")}
+
+def marcar(path, nsfw="manter", previa="manter"):
+    with db() as c:
+        r = c.execute("SELECT nsfw, previa FROM marcas WHERE path=?", (path,)).fetchone()
+        n0, p0 = (r["nsfw"], r["previa"]) if r else (None, None)
+        n1 = n0 if nsfw == "manter" else nsfw
+        p1 = p0 if previa == "manter" else previa
+        if n1 is None and not p1:
+            c.execute("DELETE FROM marcas WHERE path=?", (path,))
+        else:
+            c.execute("INSERT OR REPLACE INTO marcas VALUES(?,?,?)", (path, n1, p1))
+    registrar("marcação", dict(path=path, nsfw=nsfw, previa=previa))
+    return True
 
 def registrar(acao, detalhe):
     with db() as c:
@@ -199,6 +271,11 @@ def _familia_por_chaves(keys, meta):
             fam = "Visão (CLIP-Vision/SigLIP)"
     return fam or "?", lora
 
+COMPONENTES = [("model.diffusion_model.", "difusão (UNet/DiT)"), ("first_stage_model.", "VAE"), ("vae.", "VAE"),
+               ("conditioner.embedders.0.", "codificador de texto 1"), ("conditioner.embedders.1.", "codificador de texto 2"),
+               ("cond_stage_model.", "codificador de texto"), ("text_encoders.", "codificadores de texto"),
+               ("model_ema.", "EMA"), ("control_model.", "ControlNet")]
+
 def ler_safetensors(path, tamanho):
     with open(path, "rb") as f:
         n = struct.unpack("<Q", f.read(8))[0]
@@ -206,7 +283,7 @@ def ler_safetensors(path, tamanho):
             raise ValueError("cabeçalho inválido")
         h = json.loads(f.read(n))
     meta = h.pop("__metadata__", {}) or {}
-    dts = Counter(); params = 0; fim = 0
+    dts = Counter(); params = 0; fim = 0; comp = Counter()
     for nome, t in h.items():
         if not isinstance(t, dict):
             continue
@@ -214,6 +291,9 @@ def ler_safetensors(path, tamanho):
         cnt = 1
         for s in shape: cnt *= s
         params += cnt; dts[dt] += cnt
+        for pref, rot in COMPONENTES:
+            if nome.startswith(pref):
+                comp[rot] += cnt; break
         fim = max(fim, (t.get("data_offsets") or [0, 0])[1])
     integro = "íntegro" if 8 + n + fim == tamanho else ("truncado" if 8 + n + fim > tamanho else "sobra no fim")
     fam, lora = _familia_por_chaves(h.keys(), meta)
@@ -229,6 +309,8 @@ def ler_safetensors(path, tamanho):
             extra["gatilhos (tags de treino)"] = ", ".join(t for t, _ in tags.most_common(12))
         except Exception:
             pass
+    if len(comp) > 1:
+        extra["componentes"] = {k: v for k, v in comp.most_common()}
     if any(k.endswith(".scale_weight") or "comfy_quant" in k or k.endswith("weight_scale") for k in list(h)[:3000]):
         prec += " (quantizado/escala)"
     return dict(formato="safetensors", familia=fam, lora=lora, precisao=prec, params=params, integro=integro, meta=extra)
@@ -336,7 +418,7 @@ def analisar_modelo(path, cat, tamanho):
     r["papel"] = papel
     return r
 
-VERSAO_ANALISE = "3"
+VERSAO_ANALISE = "4"
 
 def indexar_modelos(prog=None):
     raizes = _raizes_modelos()
@@ -382,8 +464,15 @@ def indexar_modelos(prog=None):
                        a["formato"], a["familia"], a["papel"], a["precisao"], a["params"], a["integro"],
                        json.dumps(a["meta"], ensure_ascii=False), p))
     with db() as c:
+        raizes_antigas = {r["path"]: r["raiz"] for r in c.execute("SELECT path, raiz FROM modelos")}
         for p in set(antigos) - vistos:
-            c.execute("DELETE FROM modelos WHERE path=?", (p,))
+            raiz = raizes_antigas.get(p) or ""
+            if raiz and not os.path.isdir(raiz):
+                c.execute("UPDATE modelos SET offline=1 WHERE path=?", (p,))   # disco desconectado: mantém no índice
+            else:
+                c.execute("DELETE FROM modelos WHERE path=?", (p,))
+        for p in vistos:
+            c.execute("UPDATE modelos SET offline=0 WHERE path=? AND offline=1", (p,))
     return total
 
 
@@ -641,39 +730,124 @@ def indexar_workflows(prog=None):
 
 
 # ============================================================================ saídas
+TXT_CHAVES = ("text", "text_g", "text_l", "prompt", "positive", "negative", "tema", "positivo", "negativo", "value",
+              "string", "texto", "prompt_positivo", "prompt_negativo", "user_prompt", "caption")
+NAO_SEGUIR = {"clip", "model", "vae", "image", "images", "samples", "latent", "latent_image", "pixels", "mask",
+              "control_net", "noise", "sigmas", "sampler", "upscale_model", "clip_vision", "style_model"}
+
+def _textos_do_ramo(g, nid, vistos, prof=0):
+    """Segue um ramo de conditioning até os nodes de texto e devolve os textos encontrados."""
+    nid = str(nid)
+    if nid in vistos or prof > 8 or nid not in g:
+        return []
+    vistos.add(nid)
+    out = []
+    ins = (g[nid].get("inputs") or {})
+    for k, v in ins.items():
+        if isinstance(v, str) and k in TXT_CHAVES and len(v.strip()) > 2:
+            out.append(v.strip())
+        elif isinstance(v, list) and len(v) == 2 and isinstance(v[1], int) and k not in NAO_SEGUIR:
+            out += _textos_do_ramo(g, v[0], vistos, prof + 1)
+    return out
+
+def _ramos_sampler(g, n, prof=0):
+    ins = n.get("inputs") or {}
+    if prof > 3:
+        return None, None
+    pos = ins.get("positive"); neg = ins.get("negative")
+    if isinstance(pos, list):
+        return pos, neg if isinstance(neg, list) else None
+    gd = ins.get("guider")
+    if isinstance(gd, list) and str(gd[0]) in g:
+        ig = g[str(gd[0])].get("inputs") or {}
+        if isinstance(ig.get("conditioning"), list):
+            return ig["conditioning"], None
+        return _ramos_sampler(g, g[str(gd[0])], prof + 1)
+    return None, None
+
 def _meta_png(img):
     info = getattr(img, "info", {}) or {}
-    r = dict(prompt="", seed="", passos="", cfg="", sampler="", modelo="", tem_workflow=1 if "workflow" in info else 0)
+    r = dict(prompt="", negativo="", seed="", passos="", cfg="", sampler="", modelo="", modelos_usados=[],
+             tem_workflow=1 if "workflow" in info else 0)
     pr = info.get("prompt")
     if pr:
         try:
             g = json.loads(pr)
-            textos = []
+            textos = []; pos_t = []; neg_t = []; usados = []
             for nid, n in g.items():
                 ct = n.get("class_type", ""); ins = n.get("inputs", {}) or {}
-                if "KSampler" in ct or "Sampler" in ct:
+                if n.get("mode") in (2, 4):
+                    continue
+                if "Sampler" in ct or "sampler" in ct.lower():
                     for k_, alvo in (("seed", "seed"), ("noise_seed", "seed"), ("steps", "passos"), ("cfg", "cfg"),
                                      ("sampler_name", "sampler")):
                         v = ins.get(k_)
                         if v is not None and not isinstance(v, list) and not r[alvo]:
                             r[alvo] = str(v)
-                for k_ in ("ckpt_name", "unet_name", "model_name"):
-                    v = ins.get(k_)
-                    if isinstance(v, str) and RE_EXT.search(v) and not r["modelo"] and "Loader" in ct and "upscale" not in ct.lower():
-                        r["modelo"] = v
+                    p_, n_ = _ramos_sampler(g, n)
+                    if p_ and not pos_t:
+                        pos_t = _textos_do_ramo(g, p_[0], set())
+                    if n_ and not neg_t:
+                        neg_t = _textos_do_ramo(g, n_[0], set())
+                for k_, v in ins.items():
+                    if isinstance(v, str) and len(v) < 260 and RE_EXT.search(v.strip()):
+                        b = os.path.basename(v.strip().replace("\\", "/"))
+                        if b not in usados:
+                            usados.append(b)
+                        if k_ in ("ckpt_name", "unet_name", "model_name") and not r["modelo"] and "Loader" in ct and "upscale" not in ct.lower():
+                            r["modelo"] = v
                 for k_ in ("text", "positive", "text_g", "prompt", "tema", "positivo"):
                     v = ins.get(k_)
                     if isinstance(v, str) and len(v) > 15:
                         textos.append(v)
-            r["prompt"] = max(textos, key=len)[:2000] if textos else ""
+            if pos_t:
+                r["prompt"] = "\n\n".join(dict.fromkeys(pos_t))[:3000]
+            else:
+                r["prompt"] = max(textos, key=len)[:3000] if textos else ""
+            r["negativo"] = "\n\n".join(dict.fromkeys(neg_t))[:2000]
+            r["modelos_usados"] = usados[:40]
         except Exception:
             pass
     elif "parameters" in info:  # A1111/Forge
-        s = str(info["parameters"]); r["prompt"] = s.split("Negative prompt:")[0][:2000]
+        s = str(info["parameters"]); partes = s.split("Negative prompt:")
+        r["prompt"] = partes[0][:3000]
+        if len(partes) > 1:
+            r["negativo"] = re.split(r"\n(Steps|Seed):", partes[1])[0].strip()[:2000]
         for k_, alvo in (("Seed", "seed"), ("Steps", "passos"), ("CFG scale", "cfg"), ("Sampler", "sampler"), ("Model", "modelo")):
             m = re.search(rf"{k_}: ([^,]+)", s)
             if m: r[alvo] = m.group(1)
+        r["modelos_usados"] = [r["modelo"]] if r["modelo"] else []
+        for m in re.finditer(r"<lora:([^:>]+)", r["prompt"]):
+            r["modelos_usados"].append(m.group(1))
     return r
+
+def _e_texto(path):
+    """Texto ou binário pelo conteúdo, não pela extensão."""
+    try:
+        with open(path, "rb") as f:
+            b = f.read(4096)
+        if b"\x00" in b:
+            return False
+        b.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+    except Exception:
+        return False
+
+def ler_texto(path, limite=200_000):
+    if not _e_texto(path):
+        return dict(binario=True, texto="")
+    with open(path, encoding="utf-8", errors="replace") as f:
+        t = f.read(limite)
+    if path.lower().endswith(".json"):
+        try:
+            t = json.dumps(json.loads(t), ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    return dict(binario=False, texto=t)
+
+VERSAO_SAIDAS = "2"
 
 def indexar_saidas(prog=None):
     from PIL import Image
@@ -683,10 +857,13 @@ def indexar_saidas(prog=None):
         subs[:] = [s for s in subs if not s.startswith(".")]
         for fn in fs:
             fl = fn.lower()
-            if fl.endswith(EXT_IMG + EXT_VID + EXT_AUD):
+            if fl.endswith(EXT_IMG + EXT_VID + EXT_AUD + EXT_TXT):
                 arqs.append(os.path.join(raiz, fn))
     with db() as c:
         antigos = {r["path"]: r["mtime"] for r in c.execute("SELECT path,mtime FROM saidas")}
+        v = c.execute("SELECT v FROM config WHERE k='versao_saidas'").fetchone()
+        refazer = (v is None or v[0] != VERSAO_SAIDAS)
+        c.execute("INSERT OR REPLACE INTO config VALUES('versao_saidas',?)", (VERSAO_SAIDAS,))
     vistos = set()
     for i, p in enumerate(arqs):
         if prog and i % 20 == 0: prog(i, len(arqs), os.path.basename(p))
@@ -695,20 +872,31 @@ def indexar_saidas(prog=None):
             st = os.stat(p)
         except Exception:
             continue
-        if antigos.get(p) == st.st_mtime:
+        if not refazer and antigos.get(p) == st.st_mtime:
             continue
-        fl = p.lower(); tipo = "imagem" if fl.endswith(EXT_IMG) else ("vídeo" if fl.endswith(EXT_VID) else "áudio")
-        w = h = None; m = dict(prompt="", seed="", passos="", cfg="", sampler="", modelo="", tem_workflow=0)
+        fl = p.lower()
+        tipo = ("imagem" if fl.endswith(EXT_IMG) else "vídeo" if fl.endswith(EXT_VID) else
+                "áudio" if fl.endswith(EXT_AUD) else "texto")
+        w = h = None
+        m = dict(prompt="", negativo="", seed="", passos="", cfg="", sampler="", modelo="", modelos_usados=[], tem_workflow=0)
         if tipo == "imagem":
             try:
                 with Image.open(p) as im:
                     w, h = im.size; m = _meta_png(im)
             except Exception:
                 pass
+        elif tipo == "texto":
+            try:
+                t = ler_texto(p, 4000)
+                m["prompt"] = "" if t["binario"] else t["texto"][:3000]
+            except Exception:
+                pass
         with db() as c:
-            c.execute("INSERT OR REPLACE INTO saidas VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            c.execute("INSERT OR REPLACE INTO saidas(path,nome,sub,tipo,tamanho,mtime,largura,altura,prompt,seed,passos,cfg,"
+                      "sampler,modelo,tem_workflow,negativo,modelos_usados) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (p, os.path.basename(p), os.path.relpath(os.path.dirname(p), base), tipo, st.st_size, st.st_mtime,
-                       w, h, m["prompt"], m["seed"], m["passos"], m["cfg"], m["sampler"], m["modelo"], m["tem_workflow"]))
+                       w, h, m["prompt"], m["seed"], m["passos"], m["cfg"], m["sampler"], m["modelo"], m["tem_workflow"],
+                       m["negativo"], json.dumps(m["modelos_usados"], ensure_ascii=False)))
     with db() as c:
         for p in set(antigos) - vistos:
             c.execute("DELETE FROM saidas WHERE path=?", (p,))
@@ -722,6 +910,8 @@ def miniatura(path, lado=320):
     if os.path.exists(alvo):
         return alvo
     fl = path.lower()
+    if fl.endswith(EXT_TXT + EXT_AUD):
+        return None
     if fl.endswith(EXT_VID):
         ff = shutil.which("ffmpeg")
         if not ff:
@@ -795,17 +985,97 @@ def resumo():
     r["estado"] = dict(ESTADO)
     return r
 
-def listar_modelos(q="", cat="", disco="", filtro="", ordem="tamanho", limite=500):
+def _fam_base(f):
+    return re.sub(r" \(pelo nome\)$", "", f or "?")
+
+def _sensivel_modelo(r, marcas, civ=None):
+    """(sensível?, motivo) para um modelo. Marcação manual > Civitai > nome/gatilhos."""
+    mk = marcas.get(r["path"])
+    if mk and mk.get("nsfw") is not None:
+        return bool(mk["nsfw"]), "marcado por você"
+    civ = civ if civ is not None else (json.loads(r["civitai"]) if r.get("civitai") else {})
+    if civ.get("nsfw"):
+        return True, "Civitai: modelo adulto"
+    if config_ler()["nsfw_nomes_modelos"] == "1":
+        t = termo_sensivel(r["nome"])
+        if t:
+            return True, f"nome contém “{t}”"
+        meta = r["meta"] if isinstance(r.get("meta"), dict) else json.loads(r.get("meta") or "{}")
+        t = termo_sensivel(meta.get("gatilhos (tags de treino)", ""))
+        if t:
+            return True, f"tags de treino contêm “{t}”"
+    return False, ""
+
+PREV_EXT = (".preview.png", ".preview.jpg", ".preview.jpeg", ".preview.webp", ".png", ".jpg", ".jpeg", ".webp", ".thumb.jpg")
+
+def _previa_lateral(path):
+    stem = os.path.splitext(path)[0]
+    for e in PREV_EXT:
+        if os.path.isfile(stem + e):
+            return stem + e
+    return None
+
+def _ultima_saida_por_modelo():
+    """nome do arquivo (minúsculo) → saída de imagem mais recente que usou esse modelo/LoRA."""
+    mapa = {}
+    with db() as c:
+        for r in c.execute("SELECT path, prompt, modelos_usados FROM saidas WHERE tipo='imagem' AND modelos_usados IS NOT NULL "
+                           "AND modelos_usados!='[]' ORDER BY mtime DESC"):
+            for m in json.loads(r["modelos_usados"] or "[]"):
+                k = os.path.basename(m).lower()
+                if k not in mapa:
+                    mapa[k] = (r["path"], r["prompt"])
+                k2 = os.path.splitext(k)[0]
+                if k2 not in mapa:
+                    mapa[k2] = (r["path"], r["prompt"])
+    return mapa
+
+def resolver_previa(r, marcas=None, saidas_map=None):
+    """Imagem de prévia de um modelo: escolhida por você > arquivo ao lado do modelo > Civitai > última imagem gerada com ele."""
+    marcas = marcas if marcas is not None else _marcas()
+    mk = marcas.get(r["path"]) or {}
+    if mk.get("previa") and os.path.isfile(mk["previa"]):
+        return dict(arquivo=mk["previa"], origem="escolhida por você", sensivel=_sensivel_saida_simples(mk["previa"], marcas))
+    lat = _previa_lateral(r["path"])
+    if lat:
+        return dict(arquivo=lat, origem="arquivo ao lado do modelo", sensivel=None)
+    civ = json.loads(r["civitai"]) if r.get("civitai") else {}
+    if civ.get("previa") and os.path.isfile(os.path.join(PREVIAS, civ["previa"])):
+        return dict(arquivo=os.path.join(PREVIAS, civ["previa"]), origem="Civitai",
+                    sensivel=(civ.get("previa_nivel") or 0) >= 4)
+    if saidas_map is None:
+        saidas_map = _ultima_saida_por_modelo()
+    nm = r["nome"].lower()
+    sp = saidas_map.get(nm) or saidas_map.get(os.path.splitext(nm)[0])
+    if sp:
+        return dict(arquivo=sp[0], origem="última imagem gerada com ele", sensivel=_sensivel_saida_simples(sp[0], marcas, sp[1]))
+    return None
+
+def _sensivel_saida_simples(path, marcas, prompt=None):
+    mk = marcas.get(path)
+    if mk and mk.get("nsfw") is not None:
+        return bool(mk["nsfw"])
+    if prompt is None:
+        with db() as c:
+            rr = c.execute("SELECT prompt FROM saidas WHERE path=?", (path,)).fetchone()
+        prompt = rr["prompt"] if rr else ""
+    return bool(termo_sensivel(prompt))
+
+def listar_modelos(q="", cat="", disco="", filtro="", ordem="tamanho", limite=1000, familia=""):
     uso = _uso_modelos()
+    marcas = _marcas(); smap = _ultima_saida_por_modelo()
     sql = "SELECT * FROM modelos WHERE 1=1"; args = []
     if q:
-        sql += " AND (nome LIKE ? OR rel LIKE ? OR familia LIKE ? OR meta LIKE ?)"; args += [f"%{q}%"] * 4
+        sql += " AND (nome LIKE ? OR rel LIKE ? OR familia LIKE ? OR meta LIKE ? OR civitai LIKE ?)"; args += [f"%{q}%"] * 5
     if cat: sql += " AND cat=?"; args.append(cat)
     if disco: sql += " AND disco=?"; args.append(disco)
+    if familia: sql += " AND (familia=? OR familia=?)"; args += [familia, familia + " (pelo nome)"]
     if filtro == "duplicados":
         sql += " AND impressao IN (SELECT impressao FROM modelos GROUP BY impressao HAVING COUNT(*)>1)"
     if filtro == "problemas":
         sql += " AND (integro LIKE 'truncado%' OR integro LIKE 'ERRO%')"
+    if filtro == "offline":
+        sql += " AND offline=1"
     ordem_sql = {"tamanho": "tamanho DESC", "nome": "nome COLLATE NOCASE", "data": "mtime DESC", "familia": "familia, nome"}.get(ordem, "tamanho DESC")
     if filtro == "duplicados": ordem_sql = "impressao, tamanho DESC"
     sql += f" ORDER BY {ordem_sql}"
@@ -817,9 +1087,54 @@ def listar_modelos(q="", cat="", disco="", filtro="", ordem="tamanho", limite=50
         if filtro == "nao_usados" and (r["usado_por"] or r["cat"] in ("upscale_models", "embeddings", "vae_approx")):
             continue
         r["meta"] = json.loads(r["meta"] or "{}")
+        civ = json.loads(r["civitai"]) if r.get("civitai") else {}
+        r["sensivel"], r["sensivel_motivo"] = _sensivel_modelo(r, marcas, civ)
+        pv = resolver_previa(r, marcas, smap)
+        if pv:
+            if pv["sensivel"] is None:
+                pv["sensivel"] = r["sensivel"]
+            pv["sensivel"] = bool(pv["sensivel"] or r["sensivel"])
+            pv.pop("arquivo", None)
+        r["previa"] = pv
+        r["familia_inferida"] = (r["familia"] or "").endswith("(pelo nome)") or r["cat"] in CAT_FAM
+        r["nova_versao"] = civ.get("nova_versao")
+        if filtro == "sem_previa" and pv:
+            continue
+        if filtro == "sensiveis" and not r["sensivel"]:
+            continue
         out.append(r)
         if len(out) >= limite: break
     return out
+
+def facetas(cat="", disco=""):
+    with db() as c:
+        cats = [dict(r) for r in c.execute("SELECT cat, COUNT(*) n, SUM(tamanho) bytes FROM modelos " +
+                                           ("WHERE disco=? " if disco else "") + "GROUP BY cat ORDER BY n DESC", [disco] if disco else [])]
+        sql = "SELECT familia, COUNT(*) n FROM modelos WHERE 1=1"; a = []
+        if cat: sql += " AND cat=?"; a.append(cat)
+        if disco: sql += " AND disco=?"; a.append(disco)
+        fam = Counter()
+        for r in c.execute(sql + " GROUP BY familia", a):
+            fam[_fam_base(r["familia"])] += r["n"]
+        discos_ = [dict(r) for r in c.execute("SELECT disco, COUNT(*) n, SUM(tamanho) bytes, MAX(offline) offline FROM modelos GROUP BY disco")]
+    return dict(cats=cats, familias=[dict(familia=k, n=v) for k, v in fam.most_common()], discos=discos_)
+
+def arquivo_previa(path_modelo):
+    with db() as c:
+        r = c.execute("SELECT * FROM modelos WHERE path=?", (path_modelo,)).fetchone()
+    if not r:
+        return None
+    pv = resolver_previa(dict(r))
+    return pv["arquivo"] if pv else None
+
+def saidas_do_modelo(nome, limite=24):
+    nm = os.path.basename(nome)
+    marcas = _marcas()
+    with db() as c:
+        rows = [dict(r) for r in c.execute("SELECT * FROM saidas WHERE tipo='imagem' AND (modelos_usados LIKE ? OR modelos_usados LIKE ?) "
+                                           "ORDER BY mtime DESC LIMIT ?", (f'%"{nm}"%', f'%"{os.path.splitext(nm)[0]}"%', limite))]
+    _anotar_saidas(rows, marcas)
+    return rows
 
 def listar_workflows(q="", status=""):
     sql = "SELECT * FROM workflows WHERE 1=1"; args = []
@@ -835,7 +1150,9 @@ def listar_workflows(q="", status=""):
 
 def listar_nodes():
     with db() as c:
-        rows = [dict(r) for r in c.execute("SELECT * FROM nodes ORDER BY situacao!='ok', nome COLLATE NOCASE")]
+        rows = [dict(r) for r in c.execute("SELECT n.*, a.situacao AS atualizacao, a.remoto, a.quando AS verificado "
+                                           "FROM nodes n LEFT JOIN atualizacoes a ON a.pasta=n.pasta "
+                                           "ORDER BY n.situacao!='ok', n.nome COLLATE NOCASE")]
         wfs = [set(json.loads(r["tipos"] or "{}")) for r in c.execute("SELECT tipos FROM workflows")]
     for r in rows:
         r["classes"] = json.loads(r["classes"] or "[]")
@@ -843,17 +1160,55 @@ def listar_nodes():
         r["workflows_que_usam"] = sum(1 for t in wfs if t & cl)
     return rows
 
-def listar_saidas(q="", tipo="", pagina=0, por_pag=60):
-    sql = "SELECT * FROM saidas WHERE 1=1"; args = []
-    if q: sql += " AND (nome LIKE ? OR sub LIKE ? OR prompt LIKE ? OR modelo LIKE ? OR seed LIKE ?)"; args += [f"%{q}%"] * 5
-    if tipo: sql += " AND tipo=?"; args.append(tipo)
+def _modelos_sensiveis():
+    marcas = _marcas(); out = {}
     with db() as c:
-        total = c.execute(sql.replace("SELECT *", "SELECT COUNT(*)"), args).fetchone()[0]
-        rows = [dict(r) for r in c.execute(sql + " ORDER BY mtime DESC LIMIT ? OFFSET ?", args + [por_pag, pagina * por_pag])]
+        for r in c.execute("SELECT path, nome, meta, civitai FROM modelos"):
+            sv, mot = _sensivel_modelo(dict(r), marcas)
+            if sv:
+                out[r["nome"].lower()] = mot
+                out[os.path.splitext(r["nome"].lower())[0]] = mot
+    return out
+
+def _anotar_saidas(rows, marcas=None, sens_mod=None):
+    marcas = marcas if marcas is not None else _marcas()
+    sens_mod = sens_mod if sens_mod is not None else _modelos_sensiveis()
     base = folder_paths.get_output_directory()
     for r in rows:
         r["rel"] = os.path.relpath(r["path"], base)
-    return dict(total=total, itens=rows)
+        r["modelos_usados"] = json.loads(r.get("modelos_usados") or "[]") if isinstance(r.get("modelos_usados"), str) else (r.get("modelos_usados") or [])
+        mk = marcas.get(r["path"])
+        if mk and mk.get("nsfw") is not None:
+            r["sensivel"], r["sensivel_motivo"] = bool(mk["nsfw"]), "marcado por você"
+            continue
+        t = termo_sensivel(r.get("prompt") if r.get("tipo") != "texto" else "")
+        if t:
+            r["sensivel"], r["sensivel_motivo"] = True, f"prompt contém “{t}”"
+            continue
+        for m in r["modelos_usados"]:
+            k = os.path.basename(m).lower()
+            mot = sens_mod.get(k) or sens_mod.get(os.path.splitext(k)[0])
+            if mot:
+                r["sensivel"], r["sensivel_motivo"] = True, f"usou o modelo {os.path.basename(m)} ({mot})"
+                break
+        else:
+            r["sensivel"], r["sensivel_motivo"] = False, ""
+
+def listar_saidas(q="", tipo="", pagina=0, por_pag=60, sens="", ordem="data"):
+    sql = "SELECT * FROM saidas WHERE 1=1"; args = []
+    if q: sql += " AND (nome LIKE ? OR sub LIKE ? OR prompt LIKE ? OR modelo LIKE ? OR seed LIKE ? OR modelos_usados LIKE ?)"; args += [f"%{q}%"] * 6
+    if tipo: sql += " AND tipo=?"; args.append(tipo)
+    ordem_sql = {"data": "mtime DESC", "antigas": "mtime", "tamanho": "tamanho DESC", "nome": "nome COLLATE NOCASE"}.get(ordem, "mtime DESC")
+    with db() as c:
+        rows = [dict(r) for r in c.execute(sql + f" ORDER BY {ordem_sql}", args)]
+    _anotar_saidas(rows)
+    n_sens = sum(1 for r in rows if r["sensivel"])
+    if sens == "ocultar":
+        rows = [r for r in rows if not r["sensivel"]]
+    elif sens == "so":
+        rows = [r for r in rows if r["sensivel"]]
+    total = len(rows)
+    return dict(total=total, sensiveis=n_sens, itens=rows[pagina * por_pag:(pagina + 1) * por_pag])
 
 def limpeza():
     uso = _uso_modelos()
@@ -994,22 +1349,155 @@ def abrir_pasta(path):
     subprocess.Popen([xo, d], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return True
 
-def consultar_civitai(path):
+def _http_json(url, timeout=20):
     import urllib.request
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ComfyUI-Cofre"}), timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+def _sem_html(t, n=700):
+    t = re.sub(r"<br\s*/?>|</p>", "\n", t or "")
+    t = re.sub(r"<[^>]+>", "", t)
+    import html as _h
+    return re.sub(r"\n{3,}", "\n\n", _h.unescape(t)).strip()[:n]
+
+def _baixar_previa(imagens, chave):
+    """Baixa a primeira imagem (não vídeo) da versão, preferindo uma não adulta; guarda miniatura local."""
+    import urllib.request, io
+    from PIL import Image
+    imgs = [i for i in (imagens or []) if (i.get("type") or "image") == "image" and i.get("url")]
+    if not imgs:
+        return None, None
+    imgs.sort(key=lambda i: (i.get("nsfwLevel") or 1) >= 4)
+    esc = imgs[0]
+    url = re.sub(r"/(width|original)=[^/]+/", "/width=512/", esc["url"])
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ComfyUI-Cofre"}), timeout=30) as resp:
+            dados = resp.read(15_000_000)
+        with Image.open(io.BytesIO(dados)) as im:
+            im = im.convert("RGB"); im.thumbnail((512, 512))
+            nome = chave + ".jpg"
+            im.save(os.path.join(PREVIAS, nome), "JPEG", quality=85)
+        return nome, esc.get("nsfwLevel") or (4 if esc.get("nsfw") not in (None, False, "None") else 1)
+    except Exception:
+        return None, None
+
+def consultar_civitai(path, baixar_previa=True):
+    if config_ler()["civitai"] != "1":
+        raise ValueError("consultas ao Civitai estão desativadas nas Configurações")
     with db() as c:
-        r = c.execute("SELECT sha256 FROM modelos WHERE path=?", (path,)).fetchone()
-    sha = r["sha256"] if r and r["sha256"] else None
+        r = c.execute("SELECT sha256, impressao FROM modelos WHERE path=?", (path,)).fetchone()
+        sha = r["sha256"] if r and r["sha256"] else None
+        if not sha and r and r["impressao"]:
+            o = c.execute("SELECT sha256 FROM modelos WHERE impressao=? AND sha256 IS NOT NULL LIMIT 1", (r["impressao"],)).fetchone()
+            sha = o[0] if o else None
     if not sha:
         sha = sha256_arquivo(path)
-        with db() as c: c.execute("UPDATE modelos SET sha256=? WHERE path=?", (sha, path))
-    url = f"https://civitai.com/api/v1/model-versions/by-hash/{sha}"
+    with db() as c:
+        c.execute("UPDATE modelos SET sha256=? WHERE path=?", (sha, path))
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ComfyUI-Cofre"}), timeout=20) as resp:
-            d = json.loads(resp.read())
-        info = dict(modelo=(d.get("model") or {}).get("name"), versao=d.get("name"), base=d.get("baseModel"),
-                    tipo=(d.get("model") or {}).get("type"), gatilhos=d.get("trainedWords") or [],
-                    link=f"https://civitai.com/models/{d.get('modelId')}?modelVersionId={d.get('id')}", nsfw=(d.get("model") or {}).get("nsfw"))
+        d = _http_json(f"https://civitai.com/api/v1/model-versions/by-hash/{sha}")
+        mod = d.get("model") or {}
+        info = dict(modelo=mod.get("name"), versao=d.get("name"), base=d.get("baseModel"), tipo=mod.get("type"),
+                    gatilhos=d.get("trainedWords") or [], nsfw=bool(mod.get("nsfw")),
+                    link=f"https://civitai.com/models/{d.get('modelId')}?modelVersionId={d.get('id')}",
+                    publicado=(d.get("publishedAt") or d.get("createdAt") or "")[:10], descricao=_sem_html(d.get("description")))
+        try:
+            m = _http_json(f"https://civitai.com/api/v1/models/{d.get('modelId')}")
+            info["nsfw"] = bool(m.get("nsfw")) or info["nsfw"]   # nsfwLevel do modelo soma as imagens da galeria: não usar
+            info["autor"] = (m.get("creator") or {}).get("username")
+            info["tags"] = (m.get("tags") or [])[:12]
+            if not info["descricao"]:
+                info["descricao"] = _sem_html(m.get("description"))
+            vs = m.get("modelVersions") or []
+            if vs and vs[0].get("id") != d.get("id"):
+                info["nova_versao"] = dict(nome=vs[0].get("name"), base=vs[0].get("baseModel"),
+                                           link=f"https://civitai.com/models/{d.get('modelId')}?modelVersionId={vs[0].get('id')}")
+        except Exception:
+            pass
+        if baixar_previa:
+            nome, nivel = _baixar_previa(d.get("images"), sha[:24])
+            if nome:
+                info["previa"] = nome; info["previa_nivel"] = nivel
     except Exception as e:
         info = dict(erro=f"não encontrado no Civitai ({str(e)[:60]})")
-    with db() as c: c.execute("UPDATE modelos SET civitai=? WHERE path=?", (json.dumps(info, ensure_ascii=False), path))
+    with db() as c:
+        c.execute("UPDATE modelos SET civitai=? WHERE path=?", (json.dumps(info, ensure_ascii=False), path))
+    registrar("civitai", dict(path=path, achado=not info.get("erro")))
     return dict(sha256=sha, **info)
+
+ENRIQ = {"ativo": False, "feito": 0, "total": 0, "atual": "", "achados": 0, "erro": None, "parar": False}
+
+def enriquecer_lote(paths):
+    """Consulta o Civitai em segundo plano para vários modelos (calcula o SHA256 de cada um, sem enviar o arquivo)."""
+    if ENRIQ["ativo"]:
+        return False
+    paths = [p for p in paths if _permitido(p) and os.path.isfile(p)]
+    def run():
+        ENRIQ.update(ativo=True, feito=0, total=len(paths), atual="", achados=0, erro=None, parar=False)
+        try:
+            for i, p in enumerate(paths):
+                if ENRIQ["parar"]:
+                    break
+                ENRIQ.update(feito=i, atual=os.path.basename(p))
+                try:
+                    r = consultar_civitai(p)
+                    if not r.get("erro"):
+                        ENRIQ["achados"] += 1
+                except Exception as e:
+                    ENRIQ["erro"] = str(e)[:120]
+                    if "desativadas" in str(e):
+                        break
+                time.sleep(0.4)
+            ENRIQ["feito"] = len(paths)
+        finally:
+            ENRIQ.update(ativo=False, atual="")
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+
+# ============================================================================ atualizações dos custom nodes (só leitura)
+ATUALIZ = {"ativo": False, "feito": 0, "total": 0}
+
+def verificar_atualizacoes():
+    """Compara o commit local com o remoto via `git ls-remote` (não altera nada)."""
+    if ATUALIZ["ativo"]:
+        return False
+    git = shutil.which("git")
+    if not git:
+        raise ValueError("git não encontrado no sistema")
+    with db() as c:
+        alvos = [dict(r) for r in c.execute("SELECT pasta, git_url, branch, commit_ FROM nodes WHERE git_url IS NOT NULL")]
+    def um(r):
+        ref = r["branch"] if r["branch"] and r["branch"] != "(destacado)" else "HEAD"
+        try:
+            env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="echo")
+            out = subprocess.run([git, "-C", r["pasta"], "ls-remote", "origin", ref], capture_output=True, text=True,
+                                 timeout=20, env=env).stdout.split()
+            remoto = out[0] if out else ""
+            if not remoto:
+                sit = "não consegui consultar"
+            elif r["commit_"] and remoto.startswith(r["commit_"]):
+                sit = "atualizado"
+            else:
+                sit = "atualização disponível"
+        except Exception as e:
+            remoto, sit = "", "erro: " + str(e)[:60]
+        with db() as c:
+            c.execute("INSERT OR REPLACE INTO atualizacoes VALUES(?,?,?,?)", (r["pasta"], remoto[:10], sit, time.time()))
+        ATUALIZ["feito"] += 1
+    def run():
+        from concurrent.futures import ThreadPoolExecutor
+        ATUALIZ.update(ativo=True, feito=0, total=len(alvos))
+        try:
+            with ThreadPoolExecutor(8) as ex:
+                list(ex.map(um, alvos))
+        finally:
+            ATUALIZ["ativo"] = False
+            registrar("verificar atualizações", dict(pacotes=len(alvos)))
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+def atividade(limite=300):
+    with db() as c:
+        return [dict(quando=r["quando"], acao=r["acao"], detalhe=json.loads(r["detalhe"] or "{}"))
+                for r in c.execute("SELECT * FROM log ORDER BY quando DESC LIMIT ?", (limite,))]

@@ -3,6 +3,24 @@
 Todas as mudanças relevantes deste projeto ficam registradas aqui.
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.1.0] — 2026-11-22
+
+### Adicionado
+- **Modelos em grade de miniaturas** (P/M/G) ou lista, com barra lateral de pastas, famílias e discos e detalhe em janela.
+- **Prévias dos modelos:** escolhida por você, arquivo ao lado do modelo, Civitai ou a última imagem gerada com ele.
+- **Desfoque de conteúdo sensível** com revelar por item ou por sessão, marcação manual e lista de palavras editável.
+- **Saídas em lista** (miniatura, modelo/LoRAs, seed, prompt, ações) além da grade; filtro de sensíveis; ordenação; itens por página.
+- Visualizador com navegação ← →, **prompt negativo**, modelos e LoRAs usados.
+- Saídas de **texto/JSON** com prévia formatada (texto ou binário decidido pelo conteúdo).
+- **Civitai em lote**, com prévia, gatilhos, descrição, autor, tags, classificação adulta e aviso de versão nova.
+- **Verificar atualizações** dos custom nodes (`git ls-remote`, só leitura).
+- Rótulos **medido × ~ inferido** e **componentes** de checkpoints.
+- **Discos desconectados** mantêm os modelos no índice como offline.
+- Abas **Atividade** e **Configurações**; ordenação por idade na Limpeza.
+
+### Corrigido
+- O prompt positivo agora é separado do negativo (antes o texto mais longo era tomado como prompt).
+
 ## [1.0.0] — 2026-11-22
 
 ### Adicionado
