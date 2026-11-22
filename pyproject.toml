@@ -1,0 +1,15 @@
+[project]
+name = "comfyui-cofre"
+description = "Cofre: painel local (otimizado para Linux) para inventariar modelos, workflows, custom nodes e saídas do ComfyUI — dependências faltando, duplicados, discos, limpeza segura pela Lixeira e mover modelos entre SSD e HD."
+version = "1.0.0"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/profnatal/ComfyUI-Cofre"
+"Bug Tracker" = "https://github.com/profnatal/ComfyUI-Cofre/issues"
+
+[tool.comfy]
+PublisherId = "profnatal"
+DisplayName = "ComfyUI-Cofre"
+Icon = ""

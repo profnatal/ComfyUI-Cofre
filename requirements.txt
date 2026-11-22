@@ -1,0 +1,2 @@
+# Sem dependências extras: usa apenas Python padrão + Pillow e aiohttp, que o ComfyUI já instala.
+# Opcional: ffmpeg no sistema (sudo apt install ffmpeg) para miniaturas de vídeo.
