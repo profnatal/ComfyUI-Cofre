@@ -81,12 +81,18 @@ Sem nenhuma delas, o cartão mostra um ícone da categoria sobre a cor da famíl
 
 Imagens sensíveis ficam **desfocadas** nas miniaturas, nas capas dos modelos e no visualizador. Um clique revela só aquele item; o botão **👁️ Mostrar sensíveis** revela tudo apenas nesta sessão. O Cofre decide nesta ordem:
 
-1. Sua **marcação manual** (🔞 / ✅), que sempre vale.
+1. Sua **classificação manual** (🔞 sensível / ✅ seguro), que sempre vale.
 2. **Civitai:** modelo marcado como adulto pelo autor.
 3. **Palavras** no prompt **positivo** (o negativo é ignorado — “nsfw” no negativo não marca nada) e no nome ou nas tags de treino do modelo. A lista é editável.
 4. **Modelos usados:** uma imagem gerada com um LoRA sensível também é marcada.
 
-Na aba Saídas dá para **desfocar**, **ocultar** ou **mostrar só** os sensíveis.
+O seletor **Conteúdo** (abas Modelos, Saídas e Busca) lista **🔓 todo o conteúdo**, **✅ só não-NSFW** ou **🔞 só +18**, e a escolha fica lembrada entre as sessões.
+
+**Pastas sempre desfocadas:** por padrão, as prévias de **checkpoints** e **modelos de difusão** (`diffusion_models`, `unet`) ficam sempre desfocadas, porque costumam vir de galerias com conteúdo adulto. A lista de pastas é configurável.
+
+**Classificação manual:** passe o mouse num cartão e use **🔞 / ✅ / ↺** (sensível, seguro, automático), ou ative **☑ Classificar em lote**, selecione vários cartões e aplique de uma vez. A sua classificação vale para o modelo e para a prévia, e os filtros “Classificados por você” e “Ainda não classificados” ajudam a revisar a biblioteca.
+
+Nomes de arquivo são lidos separando camelCase e números, então `pornmaster`, `version4NSFW` e `TurboNSFWBy` são reconhecidos.
 
 ### 🌐 Civitai (opcional)
 

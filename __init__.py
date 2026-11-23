@@ -15,7 +15,7 @@ from . import core
 WEB_DIRECTORY = "./web"
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
-__version__ = "1.1.0"
+__version__ = "1.3.0"
 
 rotas = PromptServer.instance.routes
 
@@ -57,7 +57,8 @@ async def r_indexar(req):
 async def r_modelos(req):
     q = req.query
     return _j(await _thread(core.listar_modelos, q.get("q", ""), q.get("cat", ""), q.get("disco", ""),
-                            q.get("filtro", ""), q.get("ordem", "tamanho"), int(q.get("limite", 1000)), q.get("familia", "")))
+                            q.get("filtro", ""), q.get("ordem", "tamanho"), int(q.get("limite", 1000)), q.get("familia", ""),
+                            q.get("conteudo", "")))
 
 
 @rotas.get("/cofre/facetas")
@@ -125,6 +126,17 @@ async def r_marcar(req):
     return _j({"ok": await _thread(core.marcar, p, d.get("nsfw", "manter"), pv)})
 
 
+@rotas.post("/cofre/marcar_lote")
+async def r_marcar_lote(req):
+    """Classificação manual em lote: nsfw = 1 (sensível), 0 (seguro) ou null (automático)."""
+    d = await req.json()
+    paths = [p for p in (d.get("paths") or []) if core._permitido(p)]
+    n = d.get("nsfw")
+    if n not in (0, 1, None):
+        return _erro("valor inválido")
+    return _j({"ok": await _thread(core.marcar_lote, paths, n)})
+
+
 @rotas.get("/cofre/config")
 async def r_config(req):
     return _j(dict(core.config_ler(), __padrao=core.NSFW_PADRAO))
@@ -169,7 +181,7 @@ async def r_limpeza(req):
 
 @rotas.get("/cofre/busca")
 async def r_busca(req):
-    return _j(await _thread(core.busca, req.query.get("q", "")))
+    return _j(await _thread(core.busca, req.query.get("q", ""), 30, req.query.get("conteudo", "")))
 
 
 @rotas.get("/cofre/miniatura")

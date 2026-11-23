@@ -73,8 +73,9 @@ criar_tabelas()
 # ============================================================================ configurações
 NSFW_PADRAO = ("nsfw, nude, nudity, naked, topless, nipple, nipples, areola, breasts, explicit, porn, porno, pornographic, "
                "hentai, sex, sexual, erotic, erotica, uncensored, xxx, genitals, pussy, vagina, penis, cum, bdsm, fetish, "
-               "lingerie, nua, nuas, nu frontal, pelada, peladas, seios, mamilos, erótico, erótica")
-CONFIG_PADRAO = {"nsfw_desfocar": "1", "nsfw_palavras": NSFW_PADRAO, "nsfw_nomes_modelos": "1", "civitai": "1"}
+               "lingerie, nudify, undress, nua, nuas, nu frontal, pelada, peladas, seios, mamilos, erótico, erótica")
+CONFIG_PADRAO = {"nsfw_desfocar": "1", "nsfw_palavras": NSFW_PADRAO, "nsfw_nomes_modelos": "1", "civitai": "1",
+                 "desfocar_categorias": "checkpoints,diffusion_models,unet,unet_gguf"}
 
 _CFG = None
 def config_ler():
@@ -91,8 +92,8 @@ def config_gravar(novos):
             if k in CONFIG_PADRAO:
                 c.execute("INSERT OR REPLACE INTO config VALUES(?,?)", (k, str(v)))
     registrar("configuração", {k: v for k, v in (novos or {}).items() if k in CONFIG_PADRAO and k != "nsfw_palavras"})
-    global _RX_CACHE, _CFG
-    _RX_CACHE = None; _CFG = None
+    global _RX_CACHE, _CFG, _RX_NOME
+    _RX_CACHE = None; _CFG = None; _RX_NOME = None
     return config_ler()
 
 _RX_CACHE = None
@@ -105,6 +106,22 @@ def _rx_nsfw():
         _RX_CACHE = re.compile("|".join(partes), re.I) if partes else None
     return _RX_CACHE
 
+_RX_NOME = None
+def termo_sensivel_nome(nome):
+    """Para nomes de arquivo: separa camelCase/números e aceita a palavra dentro do nome (pornmaster, version4NSFW)."""
+    global _RX_NOME
+    if _RX_NOME is None:
+        ps = [p.strip().lower() for p in config_ler()["nsfw_palavras"].split(",") if p.strip()]
+        partes = [(re.escape(p) if len(p) >= 4 else r"(?<![a-z0-9])" + re.escape(p) + r"(?![a-z0-9])") for p in ps]
+        _RX_NOME = re.compile("|".join(partes), re.I) if partes else None
+    if not _RX_NOME or not nome:
+        return None
+    t = re.sub(r"([a-z])([A-Z])", r"\1 \2", str(nome))
+    t = re.sub(r"([A-Za-z])(\d)", r"\1 \2", t); t = re.sub(r"(\d)([A-Za-z])", r"\1 \2", t)
+    t = re.sub(r"[_\-.]+", " ", t)
+    m = _RX_NOME.search(t)
+    return m.group(0) if m else None
+
 def termo_sensivel(texto):
     rx = _rx_nsfw()
     if not rx or not texto:
@@ -115,6 +132,18 @@ def termo_sensivel(texto):
 def _marcas():
     with db() as c:
         return {r["path"]: dict(r) for r in c.execute("SELECT * FROM marcas")}
+
+def marcar_lote(paths, nsfw):
+    for p in paths:
+        with db() as c:
+            r = c.execute("SELECT previa FROM marcas WHERE path=?", (p,)).fetchone()
+            pv = r["previa"] if r else None
+            if nsfw is None and not pv:
+                c.execute("DELETE FROM marcas WHERE path=?", (p,))
+            else:
+                c.execute("INSERT OR REPLACE INTO marcas VALUES(?,?,?)", (p, nsfw, pv))
+    registrar("classificação em lote", dict(n=len(paths), nsfw=nsfw, exemplos=[os.path.basename(p) for p in paths[:5]]))
+    return len(paths)
 
 def marcar(path, nsfw="manter", previa="manter"):
     with db() as c:
@@ -997,7 +1026,7 @@ def _sensivel_modelo(r, marcas, civ=None):
     if civ.get("nsfw"):
         return True, "Civitai: modelo adulto"
     if config_ler()["nsfw_nomes_modelos"] == "1":
-        t = termo_sensivel(r["nome"])
+        t = termo_sensivel_nome(r["nome"])
         if t:
             return True, f"nome contém “{t}”"
         meta = r["meta"] if isinstance(r.get("meta"), dict) else json.loads(r.get("meta") or "{}")
@@ -1061,9 +1090,10 @@ def _sensivel_saida_simples(path, marcas, prompt=None):
         prompt = rr["prompt"] if rr else ""
     return bool(termo_sensivel(prompt))
 
-def listar_modelos(q="", cat="", disco="", filtro="", ordem="tamanho", limite=1000, familia=""):
+def listar_modelos(q="", cat="", disco="", filtro="", ordem="tamanho", limite=1000, familia="", conteudo=""):
     uso = _uso_modelos()
     marcas = _marcas(); smap = _ultima_saida_por_modelo()
+    cats_desf = {c.strip() for c in config_ler().get("desfocar_categorias", "").split(",") if c.strip()}
     sql = "SELECT * FROM modelos WHERE 1=1"; args = []
     if q:
         sql += " AND (nome LIKE ? OR rel LIKE ? OR familia LIKE ? OR meta LIKE ? OR civitai LIKE ?)"; args += [f"%{q}%"] * 5
@@ -1090,17 +1120,33 @@ def listar_modelos(q="", cat="", disco="", filtro="", ordem="tamanho", limite=10
         civ = json.loads(r["civitai"]) if r.get("civitai") else {}
         r["sensivel"], r["sensivel_motivo"] = _sensivel_modelo(r, marcas, civ)
         pv = resolver_previa(r, marcas, smap)
+        mk = marcas.get(r["path"]) or {}
+        r["marca"] = mk.get("nsfw")          # 1 = sensível, 0 = seguro, None = automático
         if pv:
-            if pv["sensivel"] is None:
-                pv["sensivel"] = r["sensivel"]
-            pv["sensivel"] = bool(pv["sensivel"] or r["sensivel"])
             pv.pop("arquivo", None)
+            if r["marca"] is not None:       # sua classificação vale para o modelo e para a prévia
+                pv["sensivel"] = bool(r["marca"]); pv["motivo"] = "classificado por você"
+            elif r["sensivel"] or pv["sensivel"]:
+                pv["sensivel"] = True
+                pv["motivo"] = r["sensivel_motivo"] if r["sensivel"] else "a imagem de prévia é sensível"
+            elif r["cat"] in cats_desf:
+                pv["sensivel"] = True; pv["motivo"] = f"prévias de {r['cat']} ficam sempre desfocadas (Configurações)"
+            else:
+                pv["sensivel"] = False
         r["previa"] = pv
         r["familia_inferida"] = (r["familia"] or "").endswith("(pelo nome)") or r["cat"] in CAT_FAM
         r["nova_versao"] = civ.get("nova_versao")
         if filtro == "sem_previa" and pv:
             continue
         if filtro == "sensiveis" and not r["sensivel"]:
+            continue
+        if conteudo == "seguro" and r["sensivel"]:
+            continue
+        if conteudo == "adulto" and not r["sensivel"]:
+            continue
+        if filtro == "classificados" and r["marca"] is None:
+            continue
+        if filtro == "nao_classificados" and r["marca"] is not None:
             continue
         out.append(r)
         if len(out) >= limite: break
@@ -1233,11 +1279,12 @@ def limpeza():
     return dict(grandes=grandes, duplicados=list(dups.values()), nao_usados=nao_usados, problemas=problemas,
                 incompletos=incompletos, saidas_pastas=saidas_pastas, discos=discos())
 
-def busca(q, limite=30):
+def busca(q, limite=30, conteudo=""):
     q = (q or "").strip()
     if not q: return {}
-    return dict(modelos=listar_modelos(q=q, limite=limite), workflows=listar_workflows(q=q)[:limite],
-                saidas=listar_saidas(q=q, por_pag=limite)["itens"],
+    sens = {"seguro": "ocultar", "adulto": "so"}.get(conteudo, "")
+    return dict(modelos=listar_modelos(q=q, limite=limite, conteudo=conteudo), workflows=listar_workflows(q=q)[:limite],
+                saidas=listar_saidas(q=q, por_pag=limite, sens=sens)["itens"],
                 nodes=[n for n in listar_nodes() if q.lower() in (n["nome"] + " " + " ".join(n["classes"])).lower()][:limite])
 
 

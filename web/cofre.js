@@ -103,12 +103,27 @@ const CSS = `
 .cofre .galeria .thumb img{height:96px!important}
 .cofre .lb .nav{position:absolute;top:50%;transform:translateY(-50%);font-size:28px;background:rgba(0,0,0,.5);color:#fff;border:0;border-radius:50%;width:46px;height:46px;cursor:pointer;z-index:4}
 .cofre .lb .midia{position:relative}
+.cofre .mcard .acoes{position:absolute;left:5px;bottom:5px;display:none;gap:3px;z-index:6}
+.cofre .mcard:hover .acoes{display:flex}
+.cofre .mgrid.lote .selo,.cofre .mgrid.lote .canto{pointer-events:none}
+.cofre .mcard .acoes button{background:rgba(0,0,0,.78);color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:6px;font-size:12px;padding:2px 6px;cursor:pointer}
+.cofre .mcard .acoes button.on{background:#2c3e57;border-color:#4ea1ff}
+.cofre .mcard.selec{border-color:#4ea1ff;box-shadow:0 0 0 2px #4ea1ff inset}
+.cofre .mcard .chk{position:absolute;left:6px;top:6px;z-index:7;width:20px;height:20px;border-radius:5px;background:rgba(0,0,0,.7);border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff}
+.cofre .mcard.selec .chk{background:#4ea1ff;border-color:#4ea1ff}
+.cofre .barra-lote{position:sticky;top:-14px;z-index:8;background:#1d3150;border:1px solid #3d5a80;border-radius:8px;padding:8px 10px;margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .cofre textarea{background:var(--comfy-input-bg,#111);color:inherit;border:1px solid var(--border-color,#444);border-radius:6px;padding:6px 8px;font-size:12.5px;width:100%;min-height:90px}
 `;
 function injetarCSS() { if (!$("#cofre-css")) document.head.append(h("style", { id: "cofre-css" }, CSS)); }
 
 // ------------------------------------------------------------------ preferências e conteúdo sensível
 const PREF = (() => { try { return Object.assign({ vistaModelos: "grade", vistaSaidas: "grade", tam: "m" }, JSON.parse(localStorage.getItem("cofre.pref") || "{}")); } catch (e) { return { vistaModelos: "grade", vistaSaidas: "grade", tam: "m" }; } })();
+const CONTEUDO_OPCOES = [["", "🔓 Todo o conteúdo"], ["seguro", "✅ Só não-NSFW"], ["adulto", "🔞 Só +18"]];
+function seletorConteudo(aoMudar) {
+  return h("select", { title: "Filtrar por classificação de conteúdo", style: PREF.conteudo ? "border-color:#4ea1ff" : "",
+    onchange: (e) => { PREF.conteudo = e.target.value; salvarPref(); aoMudar(); } },
+    CONTEUDO_OPCOES.map(([v, t]) => h("option", { value: v, selected: (PREF.conteudo || "") === v }, t)));
+}
 const salvarPref = () => { try { localStorage.setItem("cofre.pref", JSON.stringify(PREF)); } catch (e) {} };
 const TAM = { p: [140, 130], m: [180, 170], g: [240, 230] };
 let CFG = { nsfw_desfocar: "1", civitai: "1" };
@@ -247,7 +262,7 @@ const TELAS = {
   async modelos() {
     const F = (FILTROS.modelos = Object.assign({ q: "", cat: "", disco: "", familia: "", filtro: "", ordem: "tamanho" }, FILTROS.modelos || {}));
     const [res, fac] = await Promise.all([
-      GET(`/cofre/modelos?q=${enc(F.q)}&cat=${enc(F.cat)}&disco=${enc(F.disco)}&familia=${enc(F.familia)}&filtro=${enc(F.filtro)}&ordem=${enc(F.ordem)}`),
+      GET(`/cofre/modelos?q=${enc(F.q)}&cat=${enc(F.cat)}&disco=${enc(F.disco)}&familia=${enc(F.familia)}&filtro=${enc(F.filtro)}&ordem=${enc(F.ordem)}&conteudo=${enc(PREF.conteudo || "")}`),
       GET(`/cofre/facetas?cat=${enc(F.cat)}&disco=${enc(F.disco)}`)]);
     const re = () => abrirPainel.render();
     const sel = (nome, opts) => h("select", { onchange: (e) => { F[nome] = e.target.value; re(); } },
@@ -280,21 +295,26 @@ const TELAS = {
     const [cw, ch] = TAM[PREF.tam] || TAM.m;
     let conteudo;
     if (vista === "grade") {
-      conteudo = h("div", { class: "mgrid", style: `--cw:${cw}px;--ch:${ch}px` }, res.map((m) => cartaoModelo(m)));
+      conteudo = h("div", { class: "mgrid" + (LOTE.ativo ? " lote" : ""), style: `--cw:${cw}px;--ch:${ch}px` }, res.map((m) => cartaoModelo(m)));
     } else {
       const tbody = h("tbody");
       for (const m of res) {
-        const mini = m.previa ? sens(h("img", { loading: "lazy", src: api.apiURL(`/cofre/previa?path=${enc(m.path)}&lado=160`), style: "width:44px;height:44px;object-fit:cover;display:block;border-radius:5px" }), m.previa.sensivel, m.sensivel_motivo)
+        const mini = m.previa ? sens(h("img", { loading: "lazy", src: api.apiURL(`/cofre/previa?path=${enc(m.path)}&lado=160`), style: "width:44px;height:44px;object-fit:cover;display:block;border-radius:5px" }), m.previa.sensivel, m.previa.motivo || m.sensivel_motivo)
           : h("div", { style: `width:44px;height:44px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:20px;background:${corFamilia(m.familia)}` }, ICONE_CAT[m.cat] || "📦");
         const tr = h("tr", { class: "clic" },
           h("td", { style: "width:52px" }, mini),
-          h("td", {}, h("div", {}, m.nome, m.sensivel ? h("span", { class: "tag er", title: m.sensivel_motivo, style: "margin-left:6px" }, "🔞") : null, m.offline ? h("span", { class: "tag av", style: "margin-left:6px" }, "offline") : null, m.nova_versao ? h("span", { class: "tag ok", style: "margin-left:6px" }, "versão nova") : null),
+          h("td", {}, h("div", {}, m.nome, m.sensivel ? h("span", { class: "tag er", title: m.sensivel_motivo, style: "margin-left:6px" }, m.marca === 1 ? "🔞 você" : "🔞") : m.marca === 0 ? h("span", { class: "tag ok", style: "margin-left:6px" }, "✅ você") : null, m.offline ? h("span", { class: "tag av", style: "margin-left:6px" }, "offline") : null, m.nova_versao ? h("span", { class: "tag ok", style: "margin-left:6px" }, "versão nova") : null),
             h("small", { class: "mut" }, m.rel !== m.nome ? m.rel : "")),
           h("td", {}, m.cat), h("td", {}, h("span", { class: "tag " + (m.familia_inferida ? "inf" : "med") }, (m.familia_inferida ? "~ " : "") + m.familia.replace(" (pelo nome)", "")), h("div", { class: "mut" }, m.papel)),
           h("td", {}, m.precisao), h("td", { class: "num" }, PAR(m.params)), h("td", { class: "num" }, GB(m.tamanho)),
           h("td", {}, m.disco), h("td", { class: "num" }, m.usado_por.length ? h("span", { class: "tag ok" }, m.usado_por.length) : h("span", { class: "tag" }, "0")),
           h("td", {}, tagIntegridade(m)));
         let aberto = null;
+        if (LOTE.ativo) {
+          const cb = h("input", { type: "checkbox", checked: LOTE.sel.has(m.path), onclick: (e) => e.stopPropagation(), onchange: (e) => { e.target.checked ? LOTE.sel.add(m.path) : LOTE.sel.delete(m.path); abrirPainel.atualizarLote?.(); } });
+          tr.firstChild.prepend(cb);
+          tr.onclick = () => { cb.checked = !cb.checked; cb.dispatchEvent(new Event("change")); };
+        } else
         tr.onclick = () => { if (aberto) { aberto.remove(); aberto = null; return; } aberto = h("tr", {}, h("td", { colspan: 10 }, detalheModelo(m))); tr.after(aberto); };
         tbody.append(tr);
       }
@@ -303,12 +323,15 @@ const TELAS = {
     return h("div", { class: "mlay" }, lateral,
       h("div", { style: "flex:1;min-width:0" },
         h("div", { class: "cofre-row" }, busca,
-          sel("filtro", [["", "Todos"], ["sem_previa", "Sem prévia"], ["sensiveis", "Sensíveis 🔞"], ["duplicados", "Só duplicados"], ["nao_usados", "Não usados por workflows"], ["problemas", "Com problema"], ["offline", "Em disco desconectado"]]),
+          seletorConteudo(re),
+          sel("filtro", [["", "Todos"], ["sem_previa", "Sem prévia"], ["classificados", "Classificados por você"], ["nao_classificados", "Ainda não classificados"], ["duplicados", "Só duplicados"], ["nao_usados", "Não usados por workflows"], ["problemas", "Com problema"], ["offline", "Em disco desconectado"]]),
           sel("ordem", [["tamanho", "Maior primeiro"], ["nome", "Nome"], ["data", "Mais recentes"], ["familia", "Família"]]),
           segmentado([["grade", "▦ Miniaturas"], ["lista", "☰ Lista"]], vista, (v) => { PREF.vistaModelos = v; salvarPref(); re(); }),
           vista === "grade" ? segmentado([["p", "P"], ["m", "M"], ["g", "G"]], PREF.tam, (v) => { PREF.tam = v; salvarPref(); re(); }) : null,
+          h("button", { class: "btn " + (LOTE.ativo ? "" : "leve"), title: "Selecione vários modelos e classifique de uma vez", onclick: () => { LOTE.ativo = !LOTE.ativo; LOTE.sel.clear(); re(); } }, LOTE.ativo ? "✕ Sair da classificação" : "☑ Classificar em lote"),
           btnCivitai,
           h("span", { class: "mut" }, `${res.length} arquivos · ${GB(total)}`)),
+        LOTE.ativo ? barraLote(res, re) : null,
         res.length ? conteudo : h("div", { class: "mut", style: "padding:30px;text-align:center" }, "Nada encontrado com esses filtros.")));
   },
 
@@ -374,7 +397,8 @@ const TELAS = {
 
   async saidas() {
     const F = (FILTROS.saidas = Object.assign({ q: "", tipo: "", pagina: 0, sens: "", ordem: "data", por: 60 }, FILTROS.saidas || {}));
-    const r = await GET(`/cofre/saidas?q=${enc(F.q)}&tipo=${enc(F.tipo)}&pagina=${F.pagina}&por_pag=${F.por}&sens=${enc(F.sens)}&ordem=${enc(F.ordem)}`);
+    const sensQ = { seguro: "ocultar", adulto: "so" }[PREF.conteudo || ""] || "";
+    const r = await GET(`/cofre/saidas?q=${enc(F.q)}&tipo=${enc(F.tipo)}&pagina=${F.pagina}&por_pag=${F.por}&sens=${sensQ}&ordem=${enc(F.ordem)}`);
     const re = () => abrirPainel.render();
     const paginas = Math.max(1, Math.ceil(r.total / F.por));
     const itens = r.itens;
@@ -411,13 +435,12 @@ const TELAS = {
         h("input", { placeholder: "Buscar por prompt, seed, modelo, LoRA, pasta…", value: F.q, style: "width:280px", onkeydown: (e) => { if (e.key === "Enter") { F.q = e.target.value; F.pagina = 0; re(); } } }),
         h("select", { onchange: (e) => { F.tipo = e.target.value; F.pagina = 0; re(); } },
           [["", "Tudo"], ["imagem", "Imagens"], ["vídeo", "Vídeos"], ["áudio", "Áudios"], ["texto", "Textos / JSON"]].map(([v, t]) => h("option", { value: v, selected: F.tipo === v }, t))),
-        h("select", { onchange: (e) => { F.sens = e.target.value; F.pagina = 0; re(); } },
-          [["", "Sensíveis: desfocar"], ["ocultar", "Sensíveis: ocultar"], ["so", "Só sensíveis 🔞"]].map(([v, t]) => h("option", { value: v, selected: F.sens === v }, t))),
+        seletorConteudo(() => { F.pagina = 0; re(); }),
         h("select", { onchange: (e) => { F.ordem = e.target.value; F.pagina = 0; re(); } },
           [["data", "Mais recentes"], ["antigas", "Mais antigas"], ["tamanho", "Maiores"], ["nome", "Nome"]].map(([v, t]) => h("option", { value: v, selected: F.ordem === v }, t))),
         segmentado([["grade", "▦ Miniaturas"], ["lista", "☰ Lista"]], vista, (v) => { PREF.vistaSaidas = v; salvarPref(); re(); }),
         vista === "grade" ? segmentado([["p", "P"], ["m", "M"], ["g", "G"]], PREF.tam, (v) => { PREF.tam = v; salvarPref(); re(); }) : null,
-        h("span", { class: "mut" }, `${r.total} arquivos${r.sensiveis ? ` · ${r.sensiveis} sensíveis` : ""}`), h("span", { style: "flex:1" }),
+        h("span", { class: "mut" }, `${r.total} arquivos` + (PREF.conteudo ? "" : r.sensiveis ? ` · ${r.sensiveis} +18` : "")), h("span", { style: "flex:1" }),
         h("select", { onchange: (e) => { F.por = +e.target.value; F.pagina = 0; re(); } }, [30, 60, 120, 240].map((n) => h("option", { value: n, selected: F.por === n }, `${n}/pág.`))),
         h("button", { class: "btn leve", disabled: F.pagina <= 0, onclick: () => { F.pagina--; re(); } }, "◀"),
         h("span", {}, `${F.pagina + 1}/${paginas}`),
@@ -468,9 +491,10 @@ const TELAS = {
     const F = (FILTROS.busca = FILTROS.busca || { q: "" });
     const inp = h("input", { placeholder: "Busque em tudo: modelo, workflow, node, prompt, seed…", value: F.q, style: "width:420px", onkeydown: (e) => { if (e.key === "Enter") { F.q = e.target.value; abrirPainel.render(); } } });
     setTimeout(() => inp.focus(), 50);
-    if (!F.q) return h("div", {}, h("div", { class: "cofre-row" }, inp));
-    const r = await GET("/cofre/busca?q=" + enc(F.q));
-    return h("div", {}, h("div", { class: "cofre-row" }, inp),
+    const selC = seletorConteudo(() => abrirPainel.render());
+    if (!F.q) return h("div", {}, h("div", { class: "cofre-row" }, inp, selC));
+    const r = await GET("/cofre/busca?q=" + enc(F.q) + "&conteudo=" + enc(PREF.conteudo || ""));
+    return h("div", {}, h("div", { class: "cofre-row" }, inp, selC),
       h("h3", {}, `🧠 Modelos (${r.modelos.length})`), r.modelos.map((m) => h("div", {}, h("span", { class: "tag" }, m.cat), m.rel, h("span", { class: "mut" }, ` · ${GB(m.tamanho)} · ${m.disco}`))),
       h("h3", {}, `🧩 Workflows (${r.workflows.length})`), r.workflows.map((w) => h("div", { style: "display:flex;gap:8px;align-items:center;margin:3px 0" }, h("span", { style: "flex:1" }, w.path), h("button", { class: "btn", onclick: () => abrirWorkflow(w.path) }, "Abrir"))),
       h("h3", {}, `🔌 Custom nodes (${r.nodes.length})`), r.nodes.map((n) => h("div", {}, n.nome, h("span", { class: "mut" }, ` · ${n.n_classes} nodes`))),
@@ -479,13 +503,14 @@ const TELAS = {
 
   async atividade() {
     const r = await GET("/cofre/atividade");
-    const icone = { lixeira: "🗑️", mover: "🚚", civitai: "🌐", "marcação": "🏷️", "configuração": "⚙️", "verificar atualizações": "🔄" };
+    const icone = { "classificação em lote": "🏷️", lixeira: "🗑️", mover: "🚚", civitai: "🌐", "marcação": "🏷️", "configuração": "⚙️", "verificar atualizações": "🔄" };
     const resumo = (a, d) => {
       if (a === "lixeira") return `${d.feitos?.length || 0} arquivo(s) para a Lixeira${d.erros?.length ? ` · ${d.erros.length} erro(s)` : ""}` + (d.feitos?.length ? ": " + d.feitos.slice(0, 3).map((p) => p.split("/").pop()).join(", ") + (d.feitos.length > 3 ? "…" : "") : "");
       if (a === "mover") return `${(d.de || "").split("/").pop()} → ${d.para}`;
       if (a === "civitai") return `${(d.path || "").split("/").pop()} — ${d.achado ? "encontrado" : "não encontrado"}`;
       if (a === "marcação") return `${(d.path || "").split("/").pop()}${d.nsfw !== "manter" ? ` · sensível: ${d.nsfw === null ? "automático" : d.nsfw ? "sim" : "não"}` : ""}${d.previa !== "manter" ? ` · prévia: ${d.previa ? d.previa.split("/").pop() : "removida"}` : ""}`;
       if (a === "verificar atualizações") return `${d.pacotes} pacotes verificados`;
+      if (a === "classificação em lote") return `${d.n} item(ns) → ${d.nsfw === 1 ? "sensível" : d.nsfw === 0 ? "seguro" : "automático"}: ${(d.exemplos || []).join(", ")}${d.n > 5 ? "…" : ""}`;
       return JSON.stringify(d);
     };
     return h("div", {},
@@ -500,14 +525,21 @@ const TELAS = {
     const chk = (k, rot, sub) => h("label", { style: "display:flex;gap:8px;align-items:flex-start;margin:8px 0;cursor:pointer" },
       h("input", { type: "checkbox", checked: v[k] === "1", onchange: (e) => (v[k] = e.target.checked ? "1" : "0") }), h("span", {}, h("b", {}, rot), sub ? h("div", { class: "mut" }, sub) : null));
     const ta = h("textarea", { oninput: (e) => (v.nsfw_palavras = e.target.value) }, v.nsfw_palavras);
+    const fac = await GET("/cofre/facetas");
+    const marcadas = new Set((v.desfocar_categorias || "").split(",").map((x) => x.trim()).filter(Boolean));
+    const catsBox = h("div", { style: "display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:6px" }, fac.cats.map((c) =>
+      h("label", { style: "cursor:pointer;white-space:nowrap" }, h("input", { type: "checkbox", checked: marcadas.has(c.cat), onchange: (e) => { e.target.checked ? marcadas.add(c.cat) : marcadas.delete(c.cat); v.desfocar_categorias = [...marcadas].join(","); } }), ` ${ICONE_CAT[c.cat] || "📦"} ${c.cat} (${c.n})`)));
     return h("div", { style: "max-width:820px" },
       h("h3", { style: "margin-top:0" }, "🔞 Conteúdo sensível"),
       chk("nsfw_desfocar", "Desfocar imagens sensíveis", "Miniaturas, prévias de modelos e o visualizador ficam desfocados até você clicar. O botão “Mostrar sensíveis” no topo revela tudo só nesta sessão."),
       chk("nsfw_nomes_modelos", "Considerar o nome e as tags de treino dos modelos", "Ex.: um LoRA com “nsfw” ou “uncensored” no nome é marcado, e toda imagem gerada com ele também."),
+      h("div", { style: "margin:10px 0" }, h("b", {}, "Sempre desfocar as prévias destas pastas"),
+        h("div", { class: "mut" }, "Útil para checkpoints e modelos de difusão, cujas prévias costumam vir de galerias com conteúdo adulto. Os que você classificar como ✅ seguro aparecem normalmente."),
+        catsBox),
       h("div", {}, h("b", {}, "Palavras que marcam como sensível"), h("div", { class: "mut" }, "Separadas por vírgula. Valem para o prompt POSITIVO (o negativo é ignorado) e para nomes de modelos. Palavras com 5+ letras também pegam variações (erotic → erotica).")),
       ta,
       h("div", { class: "cofre-row", style: "margin-top:6px" }, h("button", { class: "btn leve", onclick: () => { ta.value = v.nsfw_palavras = c.__padrao || ta.value; } }, "↩️ Restaurar lista padrão")),
-      h("div", { class: "mut" }, "Ordem de decisão: sua marcação manual (🔞 / ✅) > classificação do Civitai > palavras do prompt > modelos usados na geração."),
+      h("div", { class: "mut" }, "Ordem de decisão: sua classificação manual (🔞 / ✅) > Civitai > palavras (nome do modelo, tags de treino, prompt positivo) > modelos usados na geração > pasta sempre desfocada."),
       h("h3", {}, "🌐 Civitai"),
       chk("civitai", "Permitir consultas ao Civitai", "Só acontecem quando você clica. Envia apenas o SHA256 do arquivo; traz prévia, gatilhos, descrição, aviso de versão nova e classificação adulta."),
       h("h3", {}, "🖼️ Prévias dos modelos — de onde vêm"),
@@ -521,6 +553,29 @@ const TELAS = {
   },
 };
 const FILTROS = {};
+const LOTE = { ativo: false, sel: new Set() };
+async function classificar(paths, nsfw) {
+  if (!paths.length) return;
+  await POST("/cofre/marcar_lote", { paths, nsfw });
+  toast(`${paths.length} modelo(s) → ${nsfw === 1 ? "🔞 sensível" : nsfw === 0 ? "✅ seguro" : "↺ automático"}`, "success");
+}
+
+function barraLote(res, re) {
+  const cont = h("b", {});
+  const atualizar = () => { cont.textContent = `${LOTE.sel.size} selecionado(s)`; };
+  abrirPainel.atualizarLote = atualizar; atualizar();
+  const aplicar = async (v) => {
+    if (!LOTE.sel.size) return toast("Selecione pelo menos um modelo", "warn");
+    await classificar([...LOTE.sel], v); LOTE.sel.clear(); re();
+  };
+  return h("div", { class: "barra-lote" }, "☑ Clique nos cartões para selecionar.", cont,
+    h("button", { class: "btn leve", onclick: () => { res.forEach((m) => LOTE.sel.add(m.path)); re(); } }, `Selecionar todos (${res.length})`),
+    h("button", { class: "btn leve", onclick: () => { LOTE.sel.clear(); re(); } }, "Limpar seleção"),
+    h("span", { style: "flex:1" }),
+    h("button", { class: "btn perigo", onclick: () => aplicar(1) }, "🔞 Sensível"),
+    h("button", { class: "btn", style: "background:#2a5a3a;border-color:#3a7a4a", onclick: () => aplicar(0) }, "✅ Seguro"),
+    h("button", { class: "btn leve", onclick: () => aplicar(null) }, "↺ Automático"));
+}
 
 function tagIntegridade(m) {
   const t = m.integro || "";
@@ -533,7 +588,7 @@ function cartaoModelo(m) {
   const capa = h("div", { class: "capa", style: `background:${corFamilia(m.familia)}` });
   if (m.previa) {
     const img = h("img", { loading: "lazy", src: api.apiURL(`/cofre/previa?path=${enc(m.path)}&lado=384`), onerror: () => { img.replaceWith(h("span", {}, ICONE_CAT[m.cat] || "📦")); } });
-    capa.append(sens(img, m.previa.sensivel, m.sensivel_motivo || m.previa.origem, "cheio"));
+    capa.append(sens(img, m.previa.sensivel, m.previa.motivo || m.sensivel_motivo || m.previa.origem, "cheio"));
     capa.lastChild.style.cssText = "width:100%;height:100%";
   } else capa.append(h("span", {}, ICONE_CAT[m.cat] || "📦"));
   const selos = h("div", { class: "selos" },
@@ -542,17 +597,27 @@ function cartaoModelo(m) {
     m.offline ? h("span", { title: "disco desconectado" }, "⏏️") : null,
     m.usado_por.length ? h("span", { title: `usado em ${m.usado_por.length} workflow(s)` }, `🧩 ${m.usado_por.length}`) : null);
   capa.append(selos);
-  return h("div", { class: "mcard", title: m.rel, onclick: () => modalModelo(m) }, capa,
+  const marcaBtn = (v, rot, dica) => h("button", { class: m.marca === v ? "on" : "", title: dica, onclick: async (e) => { e.stopPropagation(); await classificar([m.path], v); abrirPainel.render(); } }, rot);
+  if (!LOTE.ativo) capa.append(h("div", { class: "acoes" }, marcaBtn(1, "🔞", "Classificar como sensível"), marcaBtn(0, "✅", "Classificar como seguro"), marcaBtn(null, "↺", "Voltar ao automático")));
+  else capa.append(h("div", { class: "chk" }, LOTE.sel.has(m.path) ? "✓" : ""));
+  if (m.marca !== null && m.marca !== undefined) selos.prepend(h("span", { title: "classificado por você", style: `background:${m.marca ? "#8a2a2a" : "#2a6a3a"}` }, m.marca ? "🔞 você" : "✅ você"));
+  const card = h("div", { class: "mcard" + (LOTE.sel.has(m.path) ? " selec" : ""), title: m.rel, onclick: () => {
+    if (!LOTE.ativo) return modalModelo(m);
+    LOTE.sel.has(m.path) ? LOTE.sel.delete(m.path) : LOTE.sel.add(m.path);
+    card.classList.toggle("selec"); card.querySelector(".chk").textContent = LOTE.sel.has(m.path) ? "✓" : "";
+    abrirPainel.atualizarLote?.();
+  } }, capa,
     h("div", { class: "info" },
       h("div", { class: "nome" }, m.nome.replace(/\.(safetensors|gguf|ckpt|pt|pth|bin|sft)$/i, "")),
       h("div", {}, h("span", { class: "tag " + (m.familia_inferida ? "inf" : "med") }, (m.familia_inferida ? "~ " : "") + m.familia.replace(" (pelo nome)", ""))),
       h("div", { class: "mut" }, `${m.cat} · ${GB(m.tamanho)}${m.precisao && m.precisao !== "?" ? " · " + m.precisao.split(" ")[0] : ""}`)));
+  return card;
 }
 
 function modalModelo(m) {
   const grande = h("div", { class: "grande" });
   if (m.previa) {
-    grande.append(sens(h("img", { src: api.apiURL(`/cofre/previa?path=${enc(m.path)}&lado=768`) }), m.previa.sensivel, m.sensivel_motivo));
+    grande.append(sens(h("img", { src: api.apiURL(`/cofre/previa?path=${enc(m.path)}&lado=768`) }), m.previa.sensivel, m.previa.motivo || m.sensivel_motivo));
     grande.append(h("div", { class: "mut", style: "margin-top:6px" }, "Prévia: " + m.previa.origem));
   } else grande.append(h("div", { class: "ph", style: `background:${corFamilia(m.familia)}` }, ICONE_CAT[m.cat] || "📦"),
     h("div", { class: "mut", style: "margin-top:6px" }, "Sem prévia. Use “Buscar no Civitai”, escolha uma imagem gerada abaixo ou coloque um arquivo .png com o mesmo nome ao lado do modelo."));
@@ -599,12 +664,14 @@ function detalheModelo(m, aposMudar) {
     Object.keys(metaSem).length ? h("details", {}, h("summary", {}, "Metadados do arquivo"), h("pre", {}, Object.entries(metaSem).map(([k, v]) => `${k}: ${v}`).join("\n"))) : null,
     h("div", {}, h("b", {}, `Usado em ${m.usado_por.length} workflow(s): `),
       m.usado_por.length ? m.usado_por.map((w) => h("a", { href: "#", style: "color:#4ea1ff;margin-right:10px", onclick: (e) => { e.preventDefault(); abrirWorkflow(w); } }, w)) : h("span", { class: "mut" }, "nenhum")),
-    h("div", {}, h("b", {}, "Conteúdo: "), m.sensivel ? h("span", { class: "tag er" }, "🔞 sensível — " + m.sensivel_motivo) : h("span", { class: "tag" }, "não marcado como sensível")),
+    h("div", {}, h("b", {}, "Conteúdo: "), m.sensivel ? h("span", { class: "tag er" }, "🔞 sensível — " + m.sensivel_motivo) : h("span", { class: m.marca === 0 ? "tag ok" : "tag" }, m.marca === 0 ? "✅ seguro — classificado por você" : "não detectado como sensível"),
+      m.previa?.sensivel && !m.sensivel && m.marca == null ? h("span", { class: "tag av", style: "margin-left:6px" }, "prévia desfocada: " + (m.previa.motivo || "")) : null),
     civEl, moverEl,
     h("div", { class: "cofre-row", style: "margin-top:8px" },
       h("button", { class: "btn leve", onclick: () => abrirPasta(m.path) }, "📂 Abrir pasta"),
       CFG.civitai === "1" ? h("button", { class: "btn leve", onclick: async (e) => { e.target.disabled = true; e.target.textContent = "Calculando SHA256 e consultando…"; const r = await POST("/cofre/civitai", { path: m.path }); civEl.innerHTML = ""; civEl.append(r.erro && !r.sha256 ? h("span", { class: "tag er" }, r.erro) : blocoCiv(r)); e.target.textContent = "🌐 Consultar Civitai"; e.target.disabled = false; if (r.previa) toast("Prévia baixada do Civitai", "success"); } }, civ ? "🌐 Consultar Civitai de novo" : "🌐 Consultar Civitai") : null,
-      h("button", { class: "btn leve", onclick: async () => { await POST("/cofre/marcar", { path: m.path, nsfw: m.sensivel ? 0 : 1 }); toast(m.sensivel ? "Marcado como não sensível" : "Marcado como sensível", "success"); refazer(); } }, m.sensivel ? "✅ Marcar como não sensível" : "🔞 Marcar como sensível"),
+      h("span", { class: "seg", title: "Classificação manual (vale para o modelo e a prévia)" }, [[1, "🔞 Sensível"], [0, "✅ Seguro"], [null, "↺ Automático"]].map(([v, t]) =>
+        h("button", { class: (m.marca ?? null) === v ? "on" : "", onclick: async () => { await classificar([m.path], v); refazer(); } }, t))),
       m.previa?.origem === "escolhida por você" ? h("button", { class: "btn leve", onclick: async () => { await POST("/cofre/marcar", { path: m.path, previa: null }); refazer(); } }, "↩️ Remover prévia escolhida") : null,
       h("button", { class: "btn leve", onclick: async () => {
         const ds = await GET("/cofre/destinos?path=" + enc(m.path));

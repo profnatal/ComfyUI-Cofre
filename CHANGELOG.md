@@ -3,6 +3,22 @@
 Todas as mudanças relevantes deste projeto ficam registradas aqui.
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.3.0] — 2026-11-22
+
+### Adicionado
+- Seletor **Conteúdo** nas abas Modelos, Saídas e Busca: todo o conteúdo, só não-NSFW ou só +18 (lembrado entre sessões).
+
+## [1.2.0] — 2026-11-22
+
+### Adicionado
+- **Prévias de checkpoints e modelos de difusão sempre desfocadas** por padrão (pastas configuráveis).
+- **Classificação manual**: botões 🔞 / ✅ / ↺ no cartão, três estados no detalhe e modo **Classificar em lote**.
+- Filtros “Classificados por você” e “Ainda não classificados”.
+
+### Melhorado
+- Nomes de modelos são lidos separando camelCase e números (`pornmaster`, `version4NSFW`, `TurboNSFWBy`).
+- A classificação manual de um modelo vale também para a imagem de prévia.
+
 ## [1.1.0] — 2026-11-22
 
 ### Adicionado
